@@ -1,0 +1,37 @@
+# vpnchecker configuration (~/.config/vpnchecker/config.yaml)
+#
+# All outbound traffic is blocked unless it leaves through the VPN interface,
+# goes to the allowlist below, or is loopback / DNS / DHCP / NTP / ICMPv6.
+
+vpn:
+  # GlobalProtect creates utunN (older versions: gpd0)
+  interface_pattern: '^(utun\d+|gpd\d+)$'
+  # VPN address pool (required). The VPN is up when an interface with an address from these
+  # subnets exists AND the default route goes through it.
+  subnets:
+    - 10.0.0.0/8
+
+allow:
+  # RFC1918, link-local and multicast
+  lan: true
+  # Allow VPN gateways seen as host routes outside the tunnel while the VPN is up
+  learn_gateways: true
+  # Allow the portal (GlobalProtect settings) and gateways (pan_gp_event.log) automatically.
+  # While the VPN is down the log is followed, so a newly tried gateway is allowed within seconds.
+  globalprotect: true
+  # Extra VPN portal / gateway hosts the VPN client must reach to (re)connect
+  domains: []
+  #  - vpn.example.corp
+  cidrs: []
+  #  - 203.0.113.5/32
+
+check:
+  # fallback polling; routing table changes trigger an immediate check
+  interval: 2s
+  timeout: 1500ms
+  # allowlist domains are re-resolved this often; seen addresses are kept for resolve_retain
+  resolve_interval: 60s
+  resolve_retain: 24h
+
+# macOS notification when the VPN goes up / down
+notify: true
