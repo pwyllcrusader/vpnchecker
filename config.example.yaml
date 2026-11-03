@@ -12,7 +12,7 @@ vpn:
     - 10.0.0.0/8
 
 allow:
-  # RFC1918, link-local and multicast
+  # RFC1918, link-local, multicast and IPv6 ULA
   lan: true
   # Allow VPN gateways seen as host routes outside the tunnel while the VPN is up
   learn_gateways: true

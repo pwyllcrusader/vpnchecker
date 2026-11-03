@@ -29,7 +29,7 @@ The daemon:
   - `allow.learn_gateways` adds VPN gateways seen as host routes outside the tunnel while the VPN is up;
   - every seen address is kept for `resolve_retain` and persisted in `/var/db/vpnchecker/cache.json`.
 - **Drops tunnel connections** (pf states from `vpn.subnets`) when the VPN goes down; tunnel rules use `if-bound` states so no connection can fall back to `en0`.
-- **Survives its own exit.** On exit (crash, kill) it leaves rules that pass only traffic *sourced from `vpn.subnets`* — i.e. traffic going through the tunnel — so the internet comes back by itself when the VPN reconnects, and stays blocked otherwise. launchd restarts the daemon anyway.
+- **Survives its own exit.** On `SIGTERM` / `SIGINT` (launchd stop, `kill`) it leaves rules that pass only traffic *sourced from `vpn.subnets`* — i.e. traffic going through the tunnel — so the internet comes back by itself when the VPN reconnects, and stays blocked otherwise. On a crash or `SIGKILL` the last loaded rules simply stay in pf. launchd restarts the daemon in both cases.
 - **Notifies** (macOS notification) when the VPN goes up / down.
 
 ## Requirements
@@ -68,11 +68,11 @@ vpnchecker status
 | `flush` | yes | Remove vpnchecker pf rules immediately |
 | `status [--json]` | no | VPN state, interface, allowlist size, checks |
 | `check [-q]` | no | Check the VPN once. Exit code: `0` up, `1` down, `2` error |
-| `diagnose` | no | Interfaces, checks, resolved allowlist domains, detected VPN gateways |
+| `diagnose` | no | Interfaces, checks, resolved allowlist domains, discovered GlobalProtect hosts, learned VPN gateways |
 | `reload` | owner | Reload the config in the running daemon (same as `SIGHUP`) |
 | `logs [-f] [-n N]` | no | Show `/var/log/vpnchecker.log` |
 | `config init [--force]` / `validate` / `path` | no | Manage the config file |
-| `run [--dry-run]` | yes* | Run in the foreground. `--dry-run` logs rules instead of applying them (no root needed) |
+| `run [--dry-run]` | yes (no with `--dry-run`) | Run in the foreground. `--dry-run` logs rules instead of applying them |
 
 Global options: `--config <path>` (env `VPNCHECKER_CONFIG`), `--socket <path>` (default `/var/run/vpnchecker.sock`), `-v`/`-vv`.
 
@@ -86,7 +86,7 @@ vpn:
   subnets: [10.4.0.0/16, 10.5.0.0/16]       # VPN address pool, required
 
 allow:
-  lan: true                  # RFC1918, link-local, multicast
+  lan: true                  # RFC1918, link-local, multicast, IPv6 ULA
   learn_gateways: true       # auto-allow VPN gateways seen in the routing table
   globalprotect: true        # auto-allow portal/gateways from GlobalProtect settings and log
   domains:                   # extra VPN portal / gateway hosts
@@ -113,7 +113,7 @@ The config is read by a root process but cannot execute anything: it contains on
 
 ```sh
 vpnchecker status
-sudo pfctl -a com.apple/vpnchecker -sr     # rules are present while the VPN is up
+sudo pfctl -a com.apple/vpnchecker -sr     # rules are always loaded, with or without the VPN
 ```
 
 Disconnect the VPN: `curl -m5 https://example.com` must fail immediately, `vpnchecker status` shows `Down`. Reconnect: the VPN must come up and traffic must flow again.
@@ -121,7 +121,7 @@ Disconnect the VPN: `curl -m5 https://example.com` must fail immediately, `vpnch
 ## Troubleshooting
 
 - **The VPN does not reconnect while blocked** — the client needs an address that is not allowlisted (new gateway, IdP for SAML). Run `sudo vpnchecker stop` (removes the rules), connect, run `vpnchecker diagnose` and the GlobalProtect log to find the host, add it to `allow`, `sudo vpnchecker start`.
-- **Captive portals** (hotels, airports) — the login page is blocked without the VPN: `sudo vpnchecker stop`, log in, `sudo vpnchecker start`.
+- **Captive portals** (hotels, airports) — the login page is blocked without the VPN: quit apps that must not go out directly, `sudo vpnchecker stop`, log in, `sudo vpnchecker start`.
 - **Daemon does not start** — `vpnchecker logs`. An `unknown field` error means the installed binary is older than the config: reinstall with `sudo "$(which vpnchecker)" install`.
 - **Uninstall** — `sudo vpnchecker uninstall` removes the daemon, plist, binary and pf rules and releases the pf token.
 
@@ -149,7 +149,9 @@ pf already blocks the traffic, but a hook gives a clear message instead of a net
 ## Limitations
 
 - **Full tunnel only:** traffic that the VPN routes outside the tunnel (split-tunnel exclusions) is blocked.
+- **No protection while stopped:** `stop`, `flush` and `uninstall` remove the rules, and after a reboot nothing is filtered until launchd starts the daemon. Quit apps that must not go out directly before stopping it.
 - **Not per-process:** the rules apply to the whole machine. Per-process filtering requires a NetworkExtension.
+- **DNS** (port 53) is allowed to any server, so name lookups go to the local resolver while the VPN is down.
 - **IPv6:** blocked unless it goes through the tunnel or to the allowlist.
 
 ## Development
