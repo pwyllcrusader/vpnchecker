@@ -8,6 +8,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 
 use crate::config::{Config, VpnConfig};
+use crate::globalprotect::{self, Connection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +32,9 @@ pub struct VpnStatus {
     /// Matched VPN interface, reported even when the default route does not use it.
     pub interface: Option<String>,
     pub checks: Vec<CheckResult>,
+    /// What GlobalProtect reports about its own connection (current gateway, tunnel address).
+    #[serde(default)]
+    pub globalprotect: Option<Connection>,
 }
 
 /// VPN is up when an interface from the VPN pool exists AND the default route goes through it
@@ -43,6 +47,7 @@ pub async fn detect(cfg: &Config) -> VpnStatus {
                 state: VpnState::Unknown,
                 interface: None,
                 checks: vec![result("interface", false, format!("error: {e:#}"))],
+                globalprotect: None,
             };
         }
     };
@@ -64,10 +69,27 @@ pub async fn detect(cfg: &Config) -> VpnStatus {
         format!("via {}", route.as_deref().unwrap_or("?")),
     );
 
+    let gp = cfg.vpn.check_globalprotect.then(globalprotect::connection).flatten();
+    let gp_check = gp.as_ref().map(|c| {
+        result(
+            "globalprotect",
+            !c.disconnected(),
+            format!(
+                "{}{}",
+                c.status,
+                c.gateway_host.as_deref().map(|h| format!(", gateway {h}")).unwrap_or_default()
+            ),
+        )
+    });
+    let gp_ok = gp_check.as_ref().is_none_or(|c| c.ok);
+
+    let mut checks = vec![iface_check.clone(), route_check];
+    checks.extend(gp_check);
     VpnStatus {
-        state: if iface_check.ok && route_ok { VpnState::Up } else { VpnState::Down },
+        state: if iface_check.ok && route_ok && gp_ok { VpnState::Up } else { VpnState::Down },
         interface: name,
-        checks: vec![iface_check, route_check],
+        checks,
+        globalprotect: gp,
     }
 }
 

@@ -14,6 +14,12 @@ pub const TEMPLATE: &str = include_str!("../config.example.yaml");
 pub const LEARNED_GATEWAYS: &str = "@gateways";
 /// Resolver key for portal / gateway hosts discovered from GlobalProtect settings and logs.
 pub const GLOBALPROTECT_HOSTS: &str = "@globalprotect";
+/// Resolver key for the gateway address GlobalProtect itself reports for the current connection.
+pub const GP_GATEWAY: &str = "@gp-gateway";
+/// Resolver key for the resolved `protect.hosts` (Claude / Cursor servers).
+pub const PROTECTED_HOSTS: &str = "@protected";
+/// Resolver key for remote addresses seen on sockets of protected processes.
+pub const OBSERVED: &str = "@observed";
 
 const LAN_CIDRS: &[&str] = &[
     "10.0.0.0/8",
@@ -31,6 +37,13 @@ const LAN_CIDRS: &[&str] = &[
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub vpn: VpnConfig,
+    /// `scoped`: only the protected apps (Claude / Cursor) are affected. `full`: additionally block all
+    /// outbound traffic of the machine unless it goes through the VPN.
+    #[serde(default)]
+    pub mode: Mode,
+    /// Claude / Cursor protection. Always active, in both modes.
+    #[serde(default)]
+    pub protect: ProtectConfig,
     #[serde(default)]
     pub allow: AllowConfig,
     #[serde(default)]
@@ -39,12 +52,109 @@ pub struct Config {
     pub notify: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Scoped,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    /// SIGSTOP while the VPN is down, SIGCONT afterwards: nothing is lost.
+    #[default]
+    Stop,
+    /// SIGTERM, then SIGKILL.
+    Kill,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VpnConfig {
     #[serde(default = "default_interface_pattern")]
     pub interface_pattern: String,
     pub subnets: Vec<IpNet>,
+    /// Treat the VPN as down when GlobalProtect itself reports a disconnected tunnel.
+    #[serde(default = "yes")]
+    pub check_globalprotect: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProtectConfig {
+    pub action: Action,
+    /// Domain suffixes whose DNS lookups are blocked locally while the VPN is down (no query leaves the Mac).
+    pub domains: Vec<String>,
+    /// Concrete hosts resolved (while the VPN is up) into the set of server addresses blocked outside the tunnel.
+    pub hosts: Vec<String>,
+    /// Regexes matched against the full command line; a match, and all its children, is protected.
+    pub process_patterns: Vec<String>,
+    pub extra_process_patterns: Vec<String>,
+    pub dns_shield: bool,
+    pub dns_port: u16,
+    /// Kernel pf block of the known Claude / Cursor server addresses outside the tunnel.
+    pub pf_block: bool,
+    /// Also learn server addresses from the sockets of protected processes while the VPN is up. Catches rotating
+    /// cloud addresses, but also whatever else those apps talk to (GitHub, CDNs), which then becomes unreachable
+    /// for every app while the VPN is down. Off by default.
+    pub observe_connections: bool,
+    /// Wake-gap detection and relaunch scan period while blocked.
+    #[serde(with = "humantime_serde")]
+    pub interval: Duration,
+    /// A pause between two ticks longer than this means the Mac slept: freeze first, verify afterwards.
+    #[serde(with = "humantime_serde")]
+    pub wake_gap: Duration,
+    /// Minimum time to stay frozen after a wake.
+    #[serde(with = "humantime_serde")]
+    pub wake_hold: Duration,
+    /// Consecutive good checks required before resuming.
+    pub resume_checks: u32,
+}
+
+impl Default for ProtectConfig {
+    fn default() -> Self {
+        let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
+        Self {
+            action: Action::Stop,
+            domains: owned(&["anthropic.com", "claude.ai", "claude.com", "cursor.sh", "cursor.com"]),
+            hosts: owned(&[
+                "api.anthropic.com",
+                "claude.ai",
+                "console.anthropic.com",
+                "statsig.anthropic.com",
+                "cursor.com",
+                "api2.cursor.sh",
+                "api3.cursor.sh",
+                "repo.cursor.sh",
+            ]),
+            process_patterns: owned(&[
+                r"/Claude\.app/Contents/",
+                r"/Cursor\.app/Contents/",
+                r"/\.cursor/(extensions|bin|cursor-server)/",
+                r"@anthropic-ai/claude-code",
+                r"/\.local/share/claude/",
+                r"(^|/)claude( |$)",
+                r"(^|/)cursor-agent( |$)",
+            ]),
+            extra_process_patterns: Vec::new(),
+            dns_shield: true,
+            dns_port: 5399,
+            pf_block: true,
+            observe_connections: false,
+            interval: Duration::from_millis(250),
+            wake_gap: Duration::from_secs(3),
+            wake_hold: Duration::from_secs(5),
+            resume_checks: 4,
+        }
+    }
+}
+
+impl ProtectConfig {
+    pub fn patterns(&self) -> Vec<String> {
+        self.process_patterns.iter().chain(&self.extra_process_patterns).cloned().collect()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +165,9 @@ pub struct AllowConfig {
     pub learn_gateways: bool,
     /// Allow portal / gateway hosts found in GlobalProtect settings and its event log.
     pub globalprotect: bool,
+    /// Host names found in the (user-writable) GlobalProtect event log are only trusted when they end in one of
+    /// these suffixes, equal a portal, or equal the gateway GlobalProtect reports itself.
+    pub gateway_suffixes: Vec<String>,
     /// Each entry covers the domain and all of its subdomains.
     pub domains: Vec<String>,
     pub cidrs: Vec<IpNet>,
@@ -66,6 +179,7 @@ impl Default for AllowConfig {
             lan: true,
             learn_gateways: true,
             globalprotect: true,
+            gateway_suffixes: vec!["gpcloudservice.com".to_string()],
             domains: Vec::new(),
             cidrs: Vec::new(),
         }
@@ -244,6 +358,45 @@ impl Config {
         if self.check.resolve_interval < Duration::from_secs(5) {
             bail!("check.resolve_interval must be at least 5s");
         }
+        for suffix in &self.allow.gateway_suffixes {
+            validate_hostname(suffix).context("allow.gateway_suffixes")?;
+        }
+        let p = &self.protect;
+        for domain in &p.domains {
+            validate_hostname(domain).context("protect.domains")?;
+        }
+        for host in &p.hosts {
+            validate_hostname(host).context("protect.hosts")?;
+        }
+        // Both write /etc/resolver/<domain>: a name cannot be shielded and allowed at the same time.
+        for domain in &p.domains {
+            if let Some(zone) = covering_zone(&self.allow.domains, domain) {
+                bail!("protect.domains: {domain} is covered by allow.domains entry {zone}");
+            }
+        }
+        for zone in &self.allow.domains {
+            if let Some(domain) = covering_zone(&p.domains, zone) {
+                bail!("allow.domains: {zone} is covered by protect.domains entry {domain}");
+            }
+        }
+        for pattern in p.patterns() {
+            Regex::new(&pattern).with_context(|| format!("protect.process_patterns: {pattern:?}"))?;
+        }
+        if p.patterns().is_empty() {
+            bail!("protect.process_patterns must not be empty");
+        }
+        if p.interval < Duration::from_millis(100) {
+            bail!("protect.interval must be at least 100ms");
+        }
+        if p.wake_gap < Duration::from_secs(2) {
+            bail!("protect.wake_gap must be at least 2s");
+        }
+        if p.resume_checks == 0 {
+            bail!("protect.resume_checks must be at least 1");
+        }
+        if p.dns_port < 1024 {
+            bail!("protect.dns_port must be 1024 or higher");
+        }
         Ok(())
     }
 
@@ -274,6 +427,7 @@ impl Config {
         }
         if self.allow.globalprotect {
             keys.push(GLOBALPROTECT_HOSTS.to_string());
+            keys.push(GP_GATEWAY.to_string());
         }
         keys
     }
@@ -287,8 +441,13 @@ impl Config {
     }
 }
 
+/// Protection settings for commands that run without a valid config (stop / uninstall must still release things).
+pub fn protect_or_default(path: &Path) -> ProtectConfig {
+    load(path).map(|c| c.protect).unwrap_or_default()
+}
+
 /// Strict: the daemon (root) writes /etc/resolver/<host>, so no `..` or `/` may slip through.
-fn validate_hostname(host: &str) -> Result<()> {
+pub fn validate_hostname(host: &str) -> Result<()> {
     let valid = !host.is_empty()
         && host.len() <= 253
         && host.split('.').all(|label| {
@@ -335,6 +494,65 @@ mod tests {
 
         let empty = parse("vpn:\n  subnets: [10.4.0.0/16]\nallow:\n  learn_gateways: false\n  globalprotect: false\n").unwrap();
         assert_eq!(empty.warnings().len(), 1);
+    }
+
+    #[test]
+    fn scoped_is_the_default_and_protection_has_defaults() {
+        let cfg = parse("vpn:\n  subnets: [10.4.0.0/16]\n").unwrap();
+        assert_eq!(cfg.mode, Mode::Scoped);
+        assert_eq!(cfg.protect.action, Action::Stop);
+        assert!(cfg.protect.dns_shield && cfg.protect.pf_block);
+        assert!(!cfg.protect.observe_connections, "observed addresses cause collateral blocking, opt-in only");
+        assert!(cfg.protect.domains.contains(&"anthropic.com".to_string()));
+        assert!(cfg.protect.domains.contains(&"cursor.sh".to_string()));
+        assert!(cfg.vpn.check_globalprotect);
+        assert!(cfg.allow_keys().contains(&GP_GATEWAY.to_string()));
+    }
+
+    #[test]
+    fn full_mode_and_custom_protection() {
+        let cfg = parse(
+            "vpn:\n  subnets: [10.4.0.0/16]\nmode: full\nprotect:\n  action: kill\n  extra_process_patterns: ['/Foo\\.app/']\n  resume_checks: 2\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.mode, Mode::Full);
+        assert_eq!(cfg.protect.action, Action::Kill);
+        assert_eq!(cfg.protect.patterns().last().unwrap(), "/Foo\\.app/");
+    }
+
+    #[test]
+    fn rejects_bad_protection() {
+        for bad in [
+            "protect:\n  domains: ['..']\n",
+            "protect:\n  domains: ['a..b']\n",
+            "protect:\n  domains: ['../etc']\n",
+            "protect:\n  process_patterns: ['(']\n",
+            "protect:\n  process_patterns: []\n",
+            "protect:\n  wake_gap: 500ms\n",
+            "protect:\n  resume_checks: 0\n",
+            "protect:\n  dns_port: 53\n",
+            "protect:\n  action: freeze\n",
+        ] {
+            let text = format!("vpn:\n  subnets: [10.4.0.0/16]\n{bad}");
+            assert!(parse(&text).is_err(), "should reject: {bad}");
+        }
+    }
+
+    #[test]
+    fn dns_names_are_validated() {
+        assert!(validate_hostname("api2.cursor.sh").is_ok());
+        for bad in ["", ".", "a..b", "-a.com", "a-.com", "a/b", "a b", ".com"] {
+            assert!(validate_hostname(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn protect_and_allow_domains_must_not_overlap() {
+        let base = "vpn:\n  subnets: [10.4.0.0/16]\n";
+        assert!(parse(&format!("{base}allow:\n  domains: [claude.ai]\n")).is_err(), "shielded by default");
+        assert!(parse(&format!("{base}allow:\n  domains: [api.anthropic.com]\n")).is_err(), "under a shielded zone");
+        assert!(parse(&format!("{base}allow:\n  domains: [ai]\n")).is_err(), "parent of a shielded zone");
+        assert!(parse(&format!("{base}allow:\n  domains: [example.com]\n")).is_ok());
     }
 
     #[test]

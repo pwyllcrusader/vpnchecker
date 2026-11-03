@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use nix::unistd::{Gid, Uid, chown};
 
-use crate::{config, dnsproxy, pf, sys};
+use crate::{config, dnsproxy, dnsshield, pf, procs, sys};
 
 pub const LABEL: &str = "com.vpnchecker.daemon";
 pub const LOG: &str = "/var/log/vpnchecker.log";
@@ -44,9 +44,21 @@ pub fn install(config_path: &Path, socket: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn uninstall(socket: &Path) -> Result<()> {
+/// Unfreezes Claude / Cursor and removes the dns shield: nothing may stay blocked once the daemon is gone.
+async fn release_protection(config_path: &Path) {
+    let protect = config::protect_or_default(config_path);
+    if let Ok(matcher) = procs::Matcher::new(&protect.patterns()) {
+        let resumed = procs::resume_all(&matcher).await;
+        println!("resumed {resumed} Claude / Cursor processes");
+    }
+    let removed = dnsshield::remove_all_system();
+    println!("removed {removed} dns shield files");
+}
+
+pub async fn uninstall(config_path: &Path, socket: &Path) -> Result<()> {
     sys::require_root()?;
     unload()?;
+    release_protection(config_path).await;
     for path in [PLIST, BIN] {
         if let Err(e) = fs::remove_file(path)
             && e.kind() != std::io::ErrorKind::NotFound
@@ -77,9 +89,10 @@ pub fn start() -> Result<()> {
     }
 }
 
-pub fn stop(keep_block: bool) -> Result<()> {
+pub async fn stop(config_path: &Path, keep_block: bool) -> Result<()> {
     sys::require_root()?;
     unload()?;
+    release_protection(config_path).await;
     // Without the daemon these files would point allowed domains at a dead forwarder.
     dnsproxy::remove_resolver_files()?;
     if keep_block {

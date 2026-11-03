@@ -12,6 +12,7 @@ use tracing::{debug, info};
 pub const ANCHOR: &str = "com.apple/vpnchecker";
 const ALLOW_TABLE: &str = "vpnchecker_allow";
 const VPN_TABLE: &str = "vpnchecker_vpn";
+const PROTECTED_TABLE: &str = "vpnchecker_protected";
 const PFCTL: &str = "/sbin/pfctl";
 const TOKEN_FILE: &str = "/var/run/vpnchecker.pftoken";
 
@@ -48,6 +49,28 @@ pub fn render(via: Option<&Via>, allow: &BTreeSet<IpNet>) -> String {
     rules += "pass out quick inet6 proto icmp6 all keep state\n";
     rules += &format!("pass out quick to <{ALLOW_TABLE}> keep state\n");
     rules += "block return out quick all\n";
+    rules
+}
+
+/// Scoped mode: only the known Claude / Cursor server addresses are affected. They pass through the tunnel and are
+/// refused everywhere else, so a dropped VPN (or a wake before the daemon reacts) cannot leak them. Everything
+/// else on the machine is untouched, which keeps VPN reconnects, captive portals and split tunnel working.
+pub fn render_scoped(via: Option<&Via>, protected: &BTreeSet<IpNet>) -> String {
+    if protected.is_empty() {
+        return String::new();
+    }
+    let mut rules = table(PROTECTED_TABLE, protected);
+    match via {
+        Some(Via::Interface(iface)) if valid_interface_name(iface) => {
+            rules += &format!("pass out quick on {iface} to <{PROTECTED_TABLE}> keep state (if-bound)\n");
+        }
+        Some(Via::Subnets(subnets)) if !subnets.is_empty() => {
+            rules += &table(VPN_TABLE, subnets);
+            rules += &format!("pass out quick from <{VPN_TABLE}> to <{PROTECTED_TABLE}> keep state\n");
+        }
+        _ => {}
+    }
+    rules += &format!("block return out quick to <{PROTECTED_TABLE}>\n");
     rules
 }
 
@@ -202,6 +225,41 @@ mod tests {
         assert!(rules.starts_with("table <vpnchecker_vpn> persist { 10.4.0.0/16 }\n"));
         assert!(rules.contains("pass out quick from <vpnchecker_vpn> keep state"));
         assert!(rules.ends_with("block return out quick all\n"));
+    }
+
+    fn protected() -> BTreeSet<IpNet> {
+        ["160.79.104.10/32", "2606:4700::6812:137d/128"].iter().map(|s| s.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn scoped_rules_touch_only_protected_addresses() {
+        let rules = render_scoped(Some(&Via::Interface("utun4".into())), &protected());
+        assert!(rules.starts_with("table <vpnchecker_protected> persist { 160.79.104.10/32, 2606:4700::6812:137d/128 }\n"));
+        let lines: Vec<&str> = rules.lines().collect();
+        let pass = lines.iter().position(|l| l.starts_with("pass out quick on utun4 to <vpnchecker_protected>")).unwrap();
+        let block = lines.iter().position(|l| *l == "block return out quick to <vpnchecker_protected>").unwrap();
+        assert!(pass < block, "the tunnel pass must come before the block");
+        assert!(!rules.contains("block return out quick all"), "scoped mode never blocks the whole machine");
+        assert!(!rules.contains("port 53"));
+    }
+
+    #[test]
+    fn scoped_without_vpn_blocks_protected_only() {
+        let rules = render_scoped(None, &protected());
+        assert!(!rules.contains("pass"));
+        assert!(rules.ends_with("block return out quick to <vpnchecker_protected>\n"));
+    }
+
+    #[test]
+    fn scoped_exit_rules_pass_by_source_subnet() {
+        let vpn: BTreeSet<IpNet> = ["10.4.0.0/16".parse().unwrap()].into();
+        let rules = render_scoped(Some(&Via::Subnets(vpn)), &protected());
+        assert!(rules.contains("pass out quick from <vpnchecker_vpn> to <vpnchecker_protected> keep state"));
+    }
+
+    #[test]
+    fn scoped_with_nothing_learned_loads_no_rules() {
+        assert_eq!(render_scoped(None, &BTreeSet::new()), "");
     }
 
     #[test]

@@ -1,12 +1,14 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::LazyLock;
 use std::time::SystemTime;
 
 use plist::Value;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 const SETTINGS: &str = "/Library/Preferences/com.paloaltonetworks.GlobalProtect.settings.plist";
 const USER_SETTINGS: &str = "Library/Preferences/com.paloaltonetworks.GlobalProtect.settings.plist";
@@ -23,17 +25,98 @@ static GATEWAY_HOST: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(r"(?i)\b(?:gateway|to|address)\s+(?:\(null\)\s+)?({})", HOSTNAME.as_str().trim_start_matches("(?i)"))).unwrap()
 });
 
+/// What GlobalProtect reports about its own connection (`DEM` block of the root-owned settings plist,
+/// rewritten by PanGPS on every connect / disconnect).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Connection {
+    /// e.g. `connected-non-pa`; the exact vocabulary depends on the client version.
+    pub status: String,
+    pub gateway_host: Option<String>,
+    pub gateway_ip: Option<IpAddr>,
+    pub gateway_location: Option<String>,
+    pub tunnel_ip: Option<IpAddr>,
+}
+
+impl Connection {
+    /// Only an explicit "disconnected" counts: unknown values must never freeze the apps on their own.
+    pub fn disconnected(&self) -> bool {
+        self.status.to_ascii_lowercase().contains("disconnect")
+    }
+}
+
+/// Current GlobalProtect connection, or `None` when the client keeps no such state (other VPN, old client).
+pub fn connection() -> Option<Connection> {
+    parse_connection(&Value::from_file(SETTINGS).ok()?)
+}
+
+pub fn parse_connection(value: &Value) -> Option<Connection> {
+    let dem = find_dict(value, "DEM")?;
+    let text = |key: &str| dem.get(key).and_then(Value::as_string).map(str::to_string);
+    let status = text("tunnel-status")?;
+    let (gateway_host, gateway_ip) = text("gateway-address").map(|s| parse_gateway_address(&s)).unwrap_or_default();
+    let tunnel_ip = text("tunnel-ip").and_then(|s| field(&s, "ipv4").and_then(|v| v.parse().ok()));
+    Some(Connection {
+        status,
+        gateway_host,
+        gateway_ip,
+        gateway_location: text("gateway-location").filter(|s| !s.is_empty()),
+        tunnel_ip,
+    })
+}
+
+fn find_dict<'a>(value: &'a Value, key: &str) -> Option<&'a plist::Dictionary> {
+    let dict = value.as_dictionary()?;
+    if let Some(found) = dict.get(key).and_then(Value::as_dictionary) {
+        return Some(found);
+    }
+    dict.values().find_map(|v| find_dict(v, key))
+}
+
+/// `gateway=HOST,ipv4=1.2.3.4,ipv6=` -> (host, ip). The address is public, so IPv4 wins.
+fn parse_gateway_address(s: &str) -> (Option<String>, Option<IpAddr>) {
+    let host = field(s, "gateway").and_then(|h| normalize(&h));
+    let ip = field(s, "ipv4").or_else(|| field(s, "ipv6")).and_then(|v| v.parse().ok());
+    (host, ip)
+}
+
+fn field(s: &str, key: &str) -> Option<String> {
+    s.split(',')
+        .find_map(|part| part.trim().strip_prefix(key).and_then(|rest| rest.strip_prefix('=')))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// Host names from the user-writable event log are only believed when they plausibly belong to the VPN.
+fn trusted(host: &str, portals: &BTreeSet<String>, gateway: Option<&str>, suffixes: &[String]) -> bool {
+    portals.contains(host)
+        || gateway == Some(host)
+        || suffixes.iter().any(|s| {
+            let s = s.trim_start_matches('.').to_ascii_lowercase();
+            host == s || host.ends_with(&format!(".{s}"))
+        })
+}
+
 /// Portal and gateway host names known to the GlobalProtect client on this machine.
-pub fn discover(user_home: Option<&Path>) -> BTreeSet<String> {
-    let mut hosts = BTreeSet::new();
+/// Portals (plists) and the gateway GlobalProtect reports itself are always trusted; names that only appear in
+/// the event log must end in one of `trusted_suffixes`.
+pub fn discover(user_home: Option<&Path>, trusted_suffixes: &[String]) -> BTreeSet<String> {
+    let mut portals = BTreeSet::new();
     let user_settings = user_home.map(|home| home.join(USER_SETTINGS));
     for path in [Some(Path::new(SETTINGS)), user_settings.as_deref()].into_iter().flatten() {
         if let Ok(value) = Value::from_file(path) {
-            collect_portals(&value, &mut hosts);
+            collect_portals(&value, &mut portals);
         }
     }
+    let gateway = connection().and_then(|c| c.gateway_host);
+    let mut hosts = portals.clone();
+    hosts.extend(gateway.clone());
     if let Ok(log) = read_tail(Path::new(EVENT_LOG), LOG_TAIL_BYTES) {
-        hosts.extend(parse_gateways(&log));
+        hosts.extend(
+            parse_gateways(&log)
+                .into_iter()
+                .filter(|h| trusted(h, &portals, gateway.as_deref(), trusted_suffixes)),
+        );
     }
     hosts.into_iter().take(MAX_HOSTS).collect()
 }
@@ -132,6 +215,54 @@ mod tests {
         let mut out = BTreeSet::new();
         collect_portals(&Value::Dictionary(root), &mut out);
         assert_eq!(out, ["portal2.acme.example".to_string(), "vpn.acme.example".to_string()].into());
+    }
+
+    fn dem_plist(status: &str) -> Value {
+        let mut dem = plist::Dictionary::new();
+        dem.insert("tunnel-status".into(), Value::String(status.into()));
+        dem.insert(
+            "gateway-address".into(),
+            Value::String("gateway=US-East-G-Acme.gpabc.gw.gpcloudservice.com,ipv4=137.83.250.80,ipv6=".into()),
+        );
+        dem.insert("gateway-location".into(), Value::String("US East".into()));
+        dem.insert("tunnel-ip".into(), Value::String("ipv4=10.4.2.247,ipv6=".into()));
+        let mut gp = plist::Dictionary::new();
+        gp.insert("DEM".into(), Value::Dictionary(dem));
+        let mut brand = plist::Dictionary::new();
+        brand.insert("GlobalProtect".into(), Value::Dictionary(gp));
+        let mut root = plist::Dictionary::new();
+        root.insert("Palo Alto Networks".into(), Value::Dictionary(brand));
+        Value::Dictionary(root)
+    }
+
+    #[test]
+    fn reads_connection_and_gateway_from_dem() {
+        let c = parse_connection(&dem_plist("connected-non-pa")).unwrap();
+        assert!(!c.disconnected());
+        assert_eq!(c.gateway_host.as_deref(), Some("us-east-g-acme.gpabc.gw.gpcloudservice.com"));
+        assert_eq!(c.gateway_ip, Some("137.83.250.80".parse().unwrap()));
+        assert_eq!(c.tunnel_ip, Some("10.4.2.247".parse().unwrap()));
+        assert_eq!(c.gateway_location.as_deref(), Some("US East"));
+    }
+
+    #[test]
+    fn only_an_explicit_disconnect_counts() {
+        assert!(parse_connection(&dem_plist("disconnected")).unwrap().disconnected());
+        assert!(parse_connection(&dem_plist("Disconnected-by-user")).unwrap().disconnected());
+        assert!(!parse_connection(&dem_plist("connecting")).unwrap().disconnected());
+        assert!(!parse_connection(&dem_plist("something-new")).unwrap().disconnected());
+        assert!(parse_connection(&Value::Dictionary(plist::Dictionary::new())).is_none());
+    }
+
+    #[test]
+    fn log_hosts_must_be_trusted() {
+        let portals: BTreeSet<String> = ["vpn.acme.example".to_string()].into();
+        let suffixes = vec!["gpcloudservice.com".to_string()];
+        assert!(trusted("vpn.acme.example", &portals, None, &suffixes));
+        assert!(trusted("eu-g-acme.gpabc.gw.gpcloudservice.com", &portals, None, &suffixes));
+        assert!(trusted("gw.corp.example", &portals, Some("gw.corp.example"), &suffixes));
+        assert!(!trusted("evil.example", &portals, None, &suffixes));
+        assert!(!trusted("notgpcloudservice.com", &portals, None, &suffixes));
     }
 
     #[test]
