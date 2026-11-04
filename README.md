@@ -34,11 +34,20 @@ The daemon:
 
 ## Requirements
 
-- macOS
-- Rust (to build)
+- macOS (Apple Silicon or Intel)
 - `sudo` for installation (pf requires root)
 
 ## Installation
+
+Connect the VPN, then:
+
+```sh
+curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh
+```
+
+The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), runs `sudo vpnchecker install` and links `/usr/local/bin/vpnchecker`. Run the same command to update. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
+
+### From source
 
 ```sh
 cargo install vpnchecker      # or from a checkout: cargo install --path .
@@ -163,6 +172,8 @@ cargo test
 cargo clippy --all-targets
 vpnchecker --socket /tmp/vpnchecker.sock run --dry-run -v
 ```
+
+Release: bump `version` in `Cargo.toml`, commit, `git tag vX.Y.Z && git push --tags`. The `release` workflow builds the universal binary and publishes it with `install.sh` to GitHub Releases.
 
 ## License
 

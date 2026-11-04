@@ -1,6 +1,6 @@
 [package]
 name = "vpnchecker"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "VPN kill switch for macOS: outbound traffic leaves only through the VPN (pf), with a wildcard domain allowlist"
@@ -9,7 +9,7 @@ repository = "https://github.com/pwyllcrusader/vpnchecker"
 readme = "README.md"
 keywords = ["vpn", "killswitch", "macos", "pf", "firewall"]
 categories = ["command-line-utilities", "network-programming"]
-exclude = [".vscode/"]
+exclude = [".vscode/", ".github/", "install.sh"]
 
 [dependencies]
 anyhow = "1.0.104"

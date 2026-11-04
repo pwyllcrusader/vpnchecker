@@ -34,11 +34,20 @@ macOS выбирает интерфейс до того, как пакет по�
 
 ## Требования
 
-- macOS
-- Rust (для сборки)
+- macOS (Apple Silicon или Intel)
 - `sudo` для установки (pf требует root)
 
 ## Установка
+
+Подключите VPN и выполните:
+
+```sh
+curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh
+```
+
+Скрипт скачивает готовый универсальный бинарник из последнего GitHub-релиза, проверяет контрольную сумму, создаёт `~/.config/vpnchecker/config.yaml`, если его нет, отказывается продолжать, если VPN не обнаружен (иначе пропал бы интернет), выполняет `sudo vpnchecker install` и создаёт ссылку `/usr/local/bin/vpnchecker`. Для обновления запустите ту же команду. Если пул адресов VPN не `10.0.0.0/8`, укажите `vpn.subnets` в конфиге и запустите ещё раз.
+
+### Из исходников
 
 ```sh
 cargo install vpnchecker      # или из исходников: cargo install --path .
@@ -163,6 +172,8 @@ cargo test
 cargo clippy --all-targets
 vpnchecker --socket /tmp/vpnchecker.sock run --dry-run -v
 ```
+
+Релиз: поднять `version` в `Cargo.toml`, закоммитить, `git tag vX.Y.Z && git push --tags`. Workflow `release` соберёт универсальный бинарник и выложит его вместе с `install.sh` в GitHub Releases.
 
 ## Лицензия
 

@@ -15,6 +15,8 @@ const PLIST: &str = "/Library/LaunchDaemons/com.vpnchecker.daemon.plist";
 // Root-owned location so a non-root user cannot swap the binary launchd runs as root.
 const BIN_DIR: &str = "/Library/PrivilegedHelperTools";
 const BIN: &str = "/Library/PrivilegedHelperTools/vpnchecker";
+// CLI symlink created by install.sh.
+const LINK: &str = "/usr/local/bin/vpnchecker";
 
 pub fn install(config_path: &Path, socket: &Path) -> Result<()> {
     sys::require_root()?;
@@ -51,6 +53,9 @@ pub fn uninstall(socket: &Path) -> Result<()> {
         {
             return Err(e).with_context(|| format!("removing {path}"));
         }
+    }
+    if fs::read_link(LINK).is_ok_and(|target| target == Path::new(BIN)) {
+        let _ = fs::remove_file(LINK);
     }
     pf::flush()?;
     pf::release_saved_token();
