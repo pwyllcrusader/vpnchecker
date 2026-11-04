@@ -37,8 +37,8 @@ const LAN_CIDRS: &[&str] = &[
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub vpn: VpnConfig,
-    /// `scoped`: only the protected apps (Claude / Cursor) are affected. `full`: additionally block all
-    /// outbound traffic of the machine unless it goes through the VPN.
+    /// `full` (default): additionally block all outbound traffic of the machine unless it goes through the VPN.
+    /// `scoped`: only the protected apps (Claude / Cursor / Rider) are affected.
     #[serde(default)]
     pub mode: Mode,
     /// Claude / Cursor / Rider protection. Always active, in both modes.
@@ -55,8 +55,8 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
-    #[default]
     Scoped,
+    #[default]
     Full,
 }
 
@@ -498,9 +498,10 @@ mod tests {
     }
 
     #[test]
-    fn scoped_is_the_default_and_protection_has_defaults() {
+    fn full_is_the_default_and_protection_has_defaults() {
         let cfg = parse("vpn:\n  subnets: [10.4.0.0/16]\n").unwrap();
-        assert_eq!(cfg.mode, Mode::Scoped);
+        assert_eq!(cfg.mode, Mode::Full);
+        assert_eq!(parse("vpn:\n  subnets: [10.4.0.0/16]\nmode: scoped\n").unwrap().mode, Mode::Scoped);
         assert_eq!(cfg.protect.action, Action::Stop);
         assert!(cfg.protect.dns_shield && cfg.protect.pf_block);
         assert!(!cfg.protect.observe_connections, "observed addresses cause collateral blocking, opt-in only");

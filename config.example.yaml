@@ -5,11 +5,11 @@
 # kernel outside the tunnel. Rider is covered by the freeze only.
 # `mode` only decides whether the rest of the machine is restricted as well.
 
+# full (default): in addition, ALL outbound traffic is blocked unless it leaves through the VPN interface, goes to
+#         the allowlist below, or is loopback / DNS / DHCP / NTP / ICMPv6.
 # scoped: only Claude / Cursor / Rider are affected. Browser, Slack, Teams, GlobalProtect reconnects, captive portals and
 #         split-tunnel traffic keep working while the VPN is down.
-# full:   in addition, ALL outbound traffic is blocked unless it leaves through the VPN interface, goes to the
-#         allowlist below, or is loopback / DNS / DHCP / NTP / ICMPv6.
-mode: scoped
+mode: full
 
 vpn:
   # GlobalProtect creates utunN (older versions: gpd0)

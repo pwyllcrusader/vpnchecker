@@ -2,12 +2,12 @@
 
 [Русская версия](README.ru.md)
 
-A VPN kill switch for macOS, built for GlobalProtect (works with any VPN that creates a `utunN` interface). It guarantees that **Claude, Cursor and Rider reach the internet only through the VPN**, and can optionally restrict the whole machine the same way.
+A VPN kill switch for macOS, built for GlobalProtect (works with any VPN that creates a `utunN` interface). It guarantees that **Claude, Cursor and Rider reach the internet only through the VPN**, and by default restricts the whole machine the same way (`mode: full`); `mode: scoped` limits it to those three apps.
 
 | `mode` | What happens while the VPN is down |
 |---|---|
-| `scoped` (default) | Only Claude, Cursor and Rider are affected. Everything else, including GlobalProtect reconnects, captive portals and split-tunnel traffic, keeps working. |
-| `full` | Additionally **all** outbound traffic is blocked except the VPN client itself (portal / gateways) and the local network. |
+| `scoped` | Only Claude, Cursor and Rider are affected. Everything else, including GlobalProtect reconnects, captive portals and split-tunnel traffic, keeps working. |
+| `full` (default) | Additionally **all** outbound traffic is blocked except the VPN client itself (portal / gateways) and the local network. |
 
 Claude / Cursor / Rider protection is **always on**, in both modes. It has three layers, so no single one has to be perfect:
 
@@ -69,7 +69,13 @@ Connect the VPN, then:
 curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh
 ```
 
-The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), runs `sudo vpnchecker install` and links `/usr/local/bin/vpnchecker`. Run the same command to update. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
+To restrict only Claude / Cursor / Rider and leave the rest of the Mac alone, pass the mode through to the script:
+
+```sh
+curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh -s -- --mode scoped
+```
+
+The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), runs `sudo vpnchecker install` and links `/usr/local/bin/vpnchecker`. `--mode scoped|full` (or `VPNCHECKER_MODE`) sets `mode` in the config, also when the config already exists; without it a new config starts in `full`. Run the same command to update. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
 
 ### From source
 
@@ -117,7 +123,7 @@ Global options: `--config <path>` (env `VPNCHECKER_CONFIG`), `--socket <path>` (
 Path: `~/.config/vpnchecker/config.yaml`. Unknown fields are rejected. Full annotated example: [config.example.yaml](config.example.yaml).
 
 ```yaml
-mode: scoped                    # scoped | full
+mode: full                      # full (default) | scoped
 
 vpn:
   interface_pattern: '^(utun\d+|gpd\d+)$'

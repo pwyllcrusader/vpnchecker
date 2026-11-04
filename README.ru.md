@@ -2,12 +2,12 @@
 
 [English version](README.md)
 
-VPN kill switch для macOS, сделан под GlobalProtect (работает с любым VPN, создающим интерфейс `utunN`). Гарантирует, что **Claude, Cursor и Rider выходят в интернет только через VPN**, и по желанию ограничивает так же всю машину.
+VPN kill switch для macOS, сделан под GlobalProtect (работает с любым VPN, создающим интерфейс `utunN`). Гарантирует, что **Claude, Cursor и Rider выходят в интернет только через VPN**, и по умолчанию так же ограничивает всю машину (`mode: full`); `mode: scoped` ограничивает только эти три приложения.
 
 | `mode` | Что происходит, пока VPN отключён |
 |---|---|
-| `scoped` (по умолчанию) | Затронуты только Claude, Cursor и Rider. Всё остальное, включая переподключение GlobalProtect, captive-порталы и split-tunnel трафик, работает как обычно. |
-| `full` | Дополнительно блокируется **весь** исходящий трафик, кроме самого VPN-клиента (портал / шлюзы) и локальной сети. |
+| `scoped` | Затронуты только Claude, Cursor и Rider. Всё остальное, включая переподключение GlobalProtect, captive-порталы и split-tunnel трафик, работает как обычно. |
+| `full` (по умолчанию) | Дополнительно блокируется **весь** исходящий трафик, кроме самого VPN-клиента (портал / шлюзы) и локальной сети. |
 
 Защита Claude / Cursor / Rider **включена всегда**, в обоих режимах. Она состоит из трёх слоёв, чтобы ни один из них не должен быть идеальным:
 
@@ -69,7 +69,13 @@ block return out quick to <vpnchecker_protected>
 curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh
 ```
 
-Скрипт скачивает готовый универсальный бинарник из последнего GitHub-релиза, проверяет контрольную сумму, создаёт `~/.config/vpnchecker/config.yaml`, если его нет, отказывается продолжать, если VPN не обнаружен (иначе пропал бы интернет), выполняет `sudo vpnchecker install` и создаёт ссылку `/usr/local/bin/vpnchecker`. Для обновления запустите ту же команду. Если пул адресов VPN не `10.0.0.0/8`, укажите `vpn.subnets` в конфиге и запустите ещё раз.
+Чтобы ограничивать только Claude / Cursor / Rider и не трогать остальную машину, передайте режим скрипту:
+
+```sh
+curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh -s -- --mode scoped
+```
+
+Скрипт скачивает готовый универсальный бинарник из последнего GitHub-релиза, проверяет контрольную сумму, создаёт `~/.config/vpnchecker/config.yaml`, если его нет, отказывается продолжать, если VPN не обнаружен (иначе пропал бы интернет), выполняет `sudo vpnchecker install` и создаёт ссылку `/usr/local/bin/vpnchecker`. `--mode scoped|full` (или `VPNCHECKER_MODE`) записывает `mode` в конфиг, в том числе в уже существующий; без него новый конфиг начинает с `full`. Для обновления запустите ту же команду. Если пул адресов VPN не `10.0.0.0/8`, укажите `vpn.subnets` в конфиге и запустите ещё раз.
 
 ### Из исходников
 
@@ -117,7 +123,7 @@ vpnchecker status
 Путь: `~/.config/vpnchecker/config.yaml`. Неизвестные поля отклоняются. Полный пример с комментариями: [config.example.yaml](config.example.yaml).
 
 ```yaml
-mode: scoped                    # scoped | full
+mode: full                      # full (по умолчанию) | scoped
 
 vpn:
   interface_pattern: '^(utun\d+|gpd\d+)$'
