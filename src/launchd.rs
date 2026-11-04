@@ -44,12 +44,12 @@ pub fn install(config_path: &Path, socket: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Unfreezes Claude / Cursor and removes the dns shield: nothing may stay blocked once the daemon is gone.
+/// Unfreezes Claude / Cursor / Rider and removes the dns shield: nothing may stay blocked once the daemon is gone.
 async fn release_protection(config_path: &Path) {
     let protect = config::protect_or_default(config_path);
     if let Ok(matcher) = procs::Matcher::new(&protect.patterns()) {
         let resumed = procs::resume_all(&matcher).await;
-        println!("resumed {resumed} Claude / Cursor processes");
+        println!("resumed {resumed} Claude / Cursor / Rider processes");
     }
     let removed = dnsshield::remove_all_system();
     println!("removed {removed} dns shield files");

@@ -27,7 +27,7 @@ use crate::detect::VpnState;
 use crate::ipc::Request;
 
 #[derive(Parser)]
-#[command(version, about = "VPN kill switch for macOS: Claude and Cursor (optionally the whole machine) reach the internet only through the VPN")]
+#[command(version, about = "VPN kill switch for macOS: Claude, Cursor and Rider (optionally the whole machine) reach the internet only through the VPN")]
 struct Cli {
     /// Config file [default: ~/.config/vpnchecker/config.yaml]
     #[arg(long, global = true, env = "VPNCHECKER_CONFIG")]
@@ -69,7 +69,7 @@ enum Command {
     },
     /// Show interfaces, VPN checks, allowlist and detected VPN gateways
     Diagnose,
-    /// List the Claude / Cursor processes the protection covers (STAT T = frozen)
+    /// List the Claude / Cursor / Rider processes the protection covers (STAT T = frozen)
     Procs,
     /// Install and start the launchd daemon (root)
     Install,
@@ -226,7 +226,7 @@ async fn status(socket: &Path, json: bool) -> Result<()> {
     let traffic = match (snap.mode, snap.vpn.state) {
         (config::Mode::Full, VpnState::Up) => "through the VPN only (whole machine)",
         (config::Mode::Full, _) => "BLOCKED (allowlist only)",
-        (config::Mode::Scoped, _) => "only Claude / Cursor are restricted",
+        (config::Mode::Scoped, _) => "only Claude / Cursor / Rider are restricted",
     };
     println!("vpn:        {:?}{iface} for {}", snap.vpn.state, ago(snap.since));
     if let Some(gp) = &snap.vpn.globalprotect {
@@ -332,7 +332,7 @@ async fn procs_command(config_path: &Path) -> Result<()> {
     let all = procs::list().await;
     let pids = procs::select(&all, &matcher, &[std::process::id() as i32]);
     if pids.is_empty() {
-        println!("no Claude / Cursor processes running");
+        println!("no Claude / Cursor / Rider processes running");
     }
     for pid in pids {
         let stat = Process::new("/bin/ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().ok();

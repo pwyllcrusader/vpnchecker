@@ -41,7 +41,7 @@ pub struct Config {
     /// outbound traffic of the machine unless it goes through the VPN.
     #[serde(default)]
     pub mode: Mode,
-    /// Claude / Cursor protection. Always active, in both modes.
+    /// Claude / Cursor / Rider protection. Always active, in both modes.
     #[serde(default)]
     pub protect: ProtectConfig,
     #[serde(default)]
@@ -137,6 +137,7 @@ impl Default for ProtectConfig {
                 r"/\.local/share/claude/",
                 r"(^|/)claude( |$)",
                 r"(^|/)cursor-agent( |$)",
+                r"/Rider\.app/Contents/",
             ]),
             extra_process_patterns: Vec::new(),
             dns_shield: true,
@@ -505,6 +506,7 @@ mod tests {
         assert!(!cfg.protect.observe_connections, "observed addresses cause collateral blocking, opt-in only");
         assert!(cfg.protect.domains.contains(&"anthropic.com".to_string()));
         assert!(cfg.protect.domains.contains(&"cursor.sh".to_string()));
+        assert!(cfg.protect.patterns().iter().any(|p| p.contains("Rider")), "Rider is protected by default");
         assert!(cfg.vpn.check_globalprotect);
         assert!(cfg.allow_keys().contains(&GP_GATEWAY.to_string()));
     }

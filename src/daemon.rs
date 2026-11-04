@@ -442,8 +442,8 @@ impl Daemon {
                     self.shield.enable();
                 }
                 self.notify(match self.cfg.mode {
-                    Mode::Scoped => "VPN is down: Claude and Cursor are frozen",
-                    Mode::Full => "VPN is down: internet traffic is blocked, Claude and Cursor are frozen",
+                    Mode::Scoped => "VPN is down: Claude, Cursor and Rider are frozen",
+                    Mode::Full => "VPN is down: internet traffic is blocked, Claude, Cursor and Rider are frozen",
                 });
             }
             Change::Opened => {
@@ -451,7 +451,7 @@ impl Daemon {
                 self.shield.disable();
                 self.resume().await;
                 if std::mem::take(&mut self.announce_resume) {
-                    self.notify("VPN is up: Claude and Cursor resumed");
+                    self.notify("VPN is up: Claude, Cursor and Rider resumed");
                 }
                 // The protected server addresses are refreshed through the tunnel as soon as it is back.
                 self.resolve().await;
@@ -485,7 +485,7 @@ impl Daemon {
         };
         let reached = procs::signal(&pids, sig);
         if pids.len() != previous {
-            info!(count = pids.len(), reached, signal = ?sig, "blocked Claude / Cursor processes");
+            info!(count = pids.len(), reached, signal = ?sig, "blocked Claude / Cursor / Rider processes");
         }
     }
 
@@ -499,7 +499,7 @@ impl Daemon {
             return;
         }
         let reached = procs::signal(&pids, Signal::SIGCONT);
-        info!(count = pids.len(), reached, "resumed Claude / Cursor processes");
+        info!(count = pids.len(), reached, "resumed Claude / Cursor / Rider processes");
     }
 
     /// Copies the current state into the snapshot served over the control socket.

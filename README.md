@@ -2,18 +2,20 @@
 
 [Русская версия](README.ru.md)
 
-A VPN kill switch for macOS, built for GlobalProtect (works with any VPN that creates a `utunN` interface). It guarantees that **Claude and Cursor reach the internet only through the VPN**, and can optionally restrict the whole machine the same way.
+A VPN kill switch for macOS, built for GlobalProtect (works with any VPN that creates a `utunN` interface). It guarantees that **Claude, Cursor and Rider reach the internet only through the VPN**, and can optionally restrict the whole machine the same way.
 
 | `mode` | What happens while the VPN is down |
 |---|---|
-| `scoped` (default) | Only Claude and Cursor are affected. Everything else, including GlobalProtect reconnects, captive portals and split-tunnel traffic, keeps working. |
+| `scoped` (default) | Only Claude, Cursor and Rider are affected. Everything else, including GlobalProtect reconnects, captive portals and split-tunnel traffic, keeps working. |
 | `full` | Additionally **all** outbound traffic is blocked except the VPN client itself (portal / gateways) and the local network. |
 
-Claude / Cursor protection is **always on**, in both modes. It has three layers, so no single one has to be perfect:
+Claude / Cursor / Rider protection is **always on**, in both modes. It has three layers, so no single one has to be perfect:
 
-1. **Freeze** – every Claude / Cursor process and all its children (MCP servers, terminals, extension hosts) is frozen with `SIGSTOP` (or killed) the moment the VPN drops, and resumed when the VPN is verified again. A frozen app cannot send anything.
+1. **Freeze** – every Claude / Cursor / Rider process and all its children (MCP servers, terminals, extension hosts) is frozen with `SIGSTOP` (or killed) the moment the VPN drops, and resumed when the VPN is verified again. A frozen app cannot send anything.
 2. **DNS shield** – lookups for `anthropic.com`, `claude.ai`, `claude.com`, `cursor.sh`, `cursor.com` are answered by a local responder through per-domain resolver files in `/etc/resolver`. The query never leaves the Mac, so the ISP / router never sees which AI service you were about to use.
 3. **Kernel block** – a [pf](https://man.openbsd.org/pf.conf) rule refuses the known Claude / Cursor server addresses on every interface except the tunnel. Unlike the freeze it has no reaction window: it also covers the first packets after wake-up, before the daemon has run.
+
+Layers 2 and 3 know only the Claude / Cursor servers. Rider (JetBrains) is protected by the freeze alone: it is an IDE that talks to your own repositories and services, so none of its hosts are shielded or blocked by default. Add them to `protect.domains` / `protect.hosts` if you want that.
 
 ## How it works
 
@@ -81,7 +83,7 @@ vpnchecker config validate
 
 # 2. Check detection with the VPN connected
 vpnchecker diagnose
-vpnchecker procs        # the Claude / Cursor processes that will be frozen
+vpnchecker procs        # the Claude / Cursor / Rider processes that will be frozen
 
 # 3. Install as a launchd daemon
 sudo "$(which vpnchecker)" install
@@ -100,7 +102,7 @@ vpnchecker status
 | `flush` | yes | Remove vpnchecker pf rules immediately |
 | `status [--json]` | no | VPN state, GlobalProtect gateway, mode, protection state, frozen processes, DNS shield |
 | `check [-q]` | no | Check the VPN once. Exit code: `0` up, `1` down, `2` error |
-| `procs` | no | List the Claude / Cursor processes covered (STAT `T` = frozen) |
+| `procs` | no | List the Claude / Cursor / Rider processes covered (STAT `T` = frozen) |
 | `diagnose` | no | Interfaces, checks, GlobalProtect connection, protected servers, resolved allowlist domains, learned gateways |
 | `reload` | owner | Reload the config in the running daemon (same as `SIGHUP`) |
 | `allow <domain\|URL>` | owner | Add a domain (with subdomains) to `allow.domains` in the config, keeping comments, and reload the daemon |
@@ -122,7 +124,7 @@ vpn:
   subnets: [10.4.0.0/16]        # VPN address pool, required
   check_globalprotect: true
 
-protect:                        # Claude / Cursor, always active
+protect:                        # Claude / Cursor / Rider, always active
   action: stop                  # stop (freeze) | kill
   dns_shield: true
   pf_block: true
@@ -133,7 +135,7 @@ protect:                        # Claude / Cursor, always active
   resume_checks: 4
 ```
 
-Everything under `protect` has a default covering Claude.app, Claude Code (`claude`), Cursor.app, `cursor-agent`, their extensions and every child process; run `vpnchecker procs` to see what matches on your machine.
+Everything under `protect` has a default covering Claude.app, Claude Code (`claude`), Cursor.app, `cursor-agent`, Rider.app (including `Rider.Backend` and `fsnotifier`), their extensions and every child process; run `vpnchecker procs` to see what matches on your machine.
 
 **`vpn.subnets`:** the address pool the VPN assigns. Look at the `utunN` address with the VPN connected (`ifconfig`); GlobalProtect hands out a different address each time, so use the whole pool (e.g. `10.4.0.0/16`), not one address.
 
@@ -148,15 +150,15 @@ sudo pfctl -a com.apple/vpnchecker -sr     # rules are always loaded, with or wi
 ls /etc/resolver                           # allow.domains always (forwarder); while the VPN is down also anthropic.com, claude.ai, cursor.sh, ... (shield)
 ```
 
-Disconnect GlobalProtect: Claude and Cursor freeze within a fraction of a second (`vpnchecker procs` shows STAT `T`), `vpnchecker status` shows `Blocked`. Reconnect: after a second or two they resume. Closing and opening the laptop lid does the same, with a pause of about `wake_hold`.
+Disconnect GlobalProtect: Claude, Cursor and Rider freeze within a fraction of a second (`vpnchecker procs` shows STAT `T`), `vpnchecker status` shows `Blocked`. Reconnect: after a second or two they resume. Closing and opening the laptop lid does the same, with a pause of about `wake_hold`.
 
 ## Troubleshooting
 
-- **Claude / Cursor stay frozen although the VPN is up** — `vpnchecker status` and `vpnchecker check` show which check fails (usually `vpn.subnets` does not contain the tunnel address, or GlobalProtect reports a state containing "disconnect"). Fix the config and `vpnchecker reload`, or `sudo vpnchecker stop` to release everything.
-- **After a crash apps are still frozen** — `sudo vpnchecker stop`, or `sudo pkill -CONT -f 'Claude.app|Cursor.app'`.
+- **Claude / Cursor / Rider stay frozen although the VPN is up** — `vpnchecker status` and `vpnchecker check` show which check fails (usually `vpn.subnets` does not contain the tunnel address, or GlobalProtect reports a state containing "disconnect"). Fix the config and `vpnchecker reload`, or `sudo vpnchecker stop` to release everything.
+- **After a crash apps are still frozen** — `sudo vpnchecker stop`, or `sudo pkill -CONT -f 'Claude.app|Cursor.app|Rider.app'`.
 - **A protected domain does not resolve although the VPN is up** — the shield files are removed when the VPN is verified; `sudo vpnchecker stop` removes them at once (`ls /etc/resolver` shows files starting with `# managed by vpnchecker`). vpnchecker never touches resolver files it did not write.
 - **`full` mode: the VPN does not reconnect while blocked** — the client needs an address that is not allowlisted (new gateway, IdP for SAML). Run `sudo vpnchecker stop`, connect, run `vpnchecker diagnose` to find the host, add it to `allow`, `sudo vpnchecker start`. Consider `scoped` mode, which never touches the VPN client's traffic.
-- **Captive portals** (hotels, airports) — in `scoped` mode the login page just works (only Claude / Cursor are held back). In `full` mode: `sudo vpnchecker stop`, log in, `sudo vpnchecker start`.
+- **Captive portals** (hotels, airports) — in `scoped` mode the login page just works (only Claude / Cursor / Rider are held back). In `full` mode: `sudo vpnchecker stop`, log in, `sudo vpnchecker start`.
 - **Daemon does not start** — `vpnchecker logs`. An `unknown field` error means the installed binary is older than the config: reinstall with `sudo "$(which vpnchecker)" install`.
 - **Uninstall** — `sudo vpnchecker uninstall` removes the daemon, plist, binary, pf rules and DNS shield, resumes frozen apps and releases the pf token.
 

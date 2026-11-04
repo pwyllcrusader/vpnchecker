@@ -2,18 +2,20 @@
 
 [English version](README.md)
 
-VPN kill switch для macOS, сделан под GlobalProtect (работает с любым VPN, создающим интерфейс `utunN`). Гарантирует, что **Claude и Cursor выходят в интернет только через VPN**, и по желанию ограничивает так же всю машину.
+VPN kill switch для macOS, сделан под GlobalProtect (работает с любым VPN, создающим интерфейс `utunN`). Гарантирует, что **Claude, Cursor и Rider выходят в интернет только через VPN**, и по желанию ограничивает так же всю машину.
 
 | `mode` | Что происходит, пока VPN отключён |
 |---|---|
-| `scoped` (по умолчанию) | Затронуты только Claude и Cursor. Всё остальное, включая переподключение GlobalProtect, captive-порталы и split-tunnel трафик, работает как обычно. |
+| `scoped` (по умолчанию) | Затронуты только Claude, Cursor и Rider. Всё остальное, включая переподключение GlobalProtect, captive-порталы и split-tunnel трафик, работает как обычно. |
 | `full` | Дополнительно блокируется **весь** исходящий трафик, кроме самого VPN-клиента (портал / шлюзы) и локальной сети. |
 
-Защита Claude / Cursor **включена всегда**, в обоих режимах. Она состоит из трёх слоёв, чтобы ни один из них не должен быть идеальным:
+Защита Claude / Cursor / Rider **включена всегда**, в обоих режимах. Она состоит из трёх слоёв, чтобы ни один из них не должен быть идеальным:
 
-1. **Заморозка** – все процессы Claude / Cursor и все их потомки (MCP-серверы, терминалы, extension host) замораживаются `SIGSTOP` (или убиваются), как только VPN падает, и размораживаются, когда VPN снова подтверждён. Замороженное приложение ничего не отправит.
+1. **Заморозка** – все процессы Claude / Cursor / Rider и все их потомки (MCP-серверы, терминалы, extension host) замораживаются `SIGSTOP` (или убиваются), как только VPN падает, и размораживаются, когда VPN снова подтверждён. Замороженное приложение ничего не отправит.
 2. **DNS shield** – запросы к `anthropic.com`, `claude.ai`, `claude.com`, `cursor.sh`, `cursor.com` обрабатываются локальным ответчиком через файлы резолвера по доменам в `/etc/resolver`. Запрос не покидает Mac, поэтому провайдер / роутер не видит, каким AI-сервисом вы собирались воспользоваться.
 3. **Блокировка в ядре** – правило [pf](https://man.openbsd.org/pf.conf) отклоняет известные адреса серверов Claude / Cursor на любом интерфейсе, кроме туннеля. В отличие от заморозки окна реакции нет: оно закрывает и первые пакеты после пробуждения, до того как демон успел отработать.
+
+Слои 2 и 3 знают только серверы Claude / Cursor. Rider (JetBrains) защищён только заморозкой: это IDE, которая ходит в ваши собственные репозитории и сервисы, поэтому его хосты по умолчанию не экранируются и не блокируются. При желании добавьте их в `protect.domains` / `protect.hosts`.
 
 ## Как это работает
 
@@ -81,7 +83,7 @@ vpnchecker config validate
 
 # 2. Проверить детекцию при подключённом VPN
 vpnchecker diagnose
-vpnchecker procs        # процессы Claude / Cursor, которые будут заморожены
+vpnchecker procs        # процессы Claude / Cursor / Rider, которые будут заморожены
 
 # 3. Установить как launchd-демон
 sudo "$(which vpnchecker)" install
@@ -100,7 +102,7 @@ vpnchecker status
 | `flush` | да | Сразу убрать правила pf vpnchecker |
 | `status [--json]` | нет | Состояние VPN, шлюз GlobalProtect, режим, состояние защиты, замороженные процессы, DNS shield |
 | `check [-q]` | нет | Проверить VPN один раз. Код возврата: `0` поднят, `1` отключён, `2` ошибка |
-| `procs` | нет | Список охваченных процессов Claude / Cursor (STAT `T` = заморожен) |
+| `procs` | нет | Список охваченных процессов Claude / Cursor / Rider (STAT `T` = заморожен) |
 | `diagnose` | нет | Интерфейсы, проверки, соединение GlobalProtect, защищаемые серверы, разрезолвленные домены allowlist, найденные шлюзы |
 | `reload` | владелец | Перечитать конфиг в работающем демоне (то же, что `SIGHUP`) |
 | `allow <домен\|URL>` | владелец | Добавить домен (с поддоменами) в `allow.domains` конфига, сохранив комментарии, и перечитать конфиг в демоне |
@@ -122,7 +124,7 @@ vpn:
   subnets: [10.4.0.0/16]        # пул адресов VPN, обязательно
   check_globalprotect: true
 
-protect:                        # Claude / Cursor, всегда активно
+protect:                        # Claude / Cursor / Rider, всегда активно
   action: stop                  # stop (заморозка) | kill
   dns_shield: true
   pf_block: true
@@ -133,7 +135,7 @@ protect:                        # Claude / Cursor, всегда активно
   resume_checks: 4
 ```
 
-У всего в `protect` есть значения по умолчанию: Claude.app, Claude Code (`claude`), Cursor.app, `cursor-agent`, их расширения и все дочерние процессы; `vpnchecker procs` покажет, что подходит на вашей машине.
+У всего в `protect` есть значения по умолчанию: Claude.app, Claude Code (`claude`), Cursor.app, `cursor-agent`, Rider.app (включая `Rider.Backend` и `fsnotifier`), их расширения и все дочерние процессы; `vpnchecker procs` покажет, что подходит на вашей машине.
 
 **`vpn.subnets`:** пул адресов, который выдаёт VPN. Посмотрите адрес `utunN` при подключённом VPN (`ifconfig`); GlobalProtect каждый раз выдаёт другой адрес, поэтому указывайте весь пул (например `10.4.0.0/16`), а не один адрес.
 
@@ -148,15 +150,15 @@ sudo pfctl -a com.apple/vpnchecker -sr     # правила загружены �
 ls /etc/resolver                           # allow.domains всегда (форвардер); пока VPN отключён ещё и anthropic.com, claude.ai, cursor.sh, ... (shield)
 ```
 
-Отключите GlobalProtect: Claude и Cursor замирают за доли секунды (`vpnchecker procs` покажет STAT `T`), `vpnchecker status` показывает `Blocked`. Подключите снова: через секунду-две они продолжат работу. Закрытие и открытие крышки ноутбука даёт то же самое с паузой около `wake_hold`.
+Отключите GlobalProtect: Claude, Cursor и Rider замирают за доли секунды (`vpnchecker procs` покажет STAT `T`), `vpnchecker status` показывает `Blocked`. Подключите снова: через секунду-две они продолжат работу. Закрытие и открытие крышки ноутбука даёт то же самое с паузой около `wake_hold`.
 
 ## Устранение неполадок
 
-- **Claude / Cursor остаются замороженными, хотя VPN поднят** — `vpnchecker status` и `vpnchecker check` покажут, какая проверка не проходит (обычно `vpn.subnets` не содержит адрес туннеля или GlobalProtect сообщает состояние со словом «disconnect»). Исправьте конфиг и `vpnchecker reload`, либо `sudo vpnchecker stop`, чтобы освободить всё.
-- **После сбоя приложения всё ещё заморожены** — `sudo vpnchecker stop` или `sudo pkill -CONT -f 'Claude.app|Cursor.app'`.
+- **Claude / Cursor / Rider остаются замороженными, хотя VPN поднят** — `vpnchecker status` и `vpnchecker check` покажут, какая проверка не проходит (обычно `vpn.subnets` не содержит адрес туннеля или GlobalProtect сообщает состояние со словом «disconnect»). Исправьте конфиг и `vpnchecker reload`, либо `sudo vpnchecker stop`, чтобы освободить всё.
+- **После сбоя приложения всё ещё заморожены** — `sudo vpnchecker stop` или `sudo pkill -CONT -f 'Claude.app|Cursor.app|Rider.app'`.
 - **Защищаемый домен не резолвится, хотя VPN поднят** — файлы shield удаляются, когда VPN подтверждён; `sudo vpnchecker stop` удалит их сразу (`ls /etc/resolver` покажет файлы, начинающиеся с `# managed by vpnchecker`). vpnchecker никогда не трогает файлы резолвера, которые написал не он.
 - **Режим `full`: VPN не переподключается, пока заблокировано** — клиенту нужен адрес вне allowlist (новый шлюз, IdP для SAML). Выполните `sudo vpnchecker stop`, подключитесь, найдите хост через `vpnchecker diagnose`, добавьте его в `allow`, `sudo vpnchecker start`. Подумайте о режиме `scoped`: он никогда не трогает трафик VPN-клиента.
-- **Captive-порталы** (отели, аэропорты) — в режиме `scoped` страница входа просто работает (задерживаются только Claude / Cursor). В режиме `full`: `sudo vpnchecker stop`, войти, `sudo vpnchecker start`.
+- **Captive-порталы** (отели, аэропорты) — в режиме `scoped` страница входа просто работает (задерживаются только Claude / Cursor / Rider). В режиме `full`: `sudo vpnchecker stop`, войти, `sudo vpnchecker start`.
 - **Демон не запускается** — `vpnchecker logs`. Ошибка `unknown field` значит, что установленный бинарник старее конфига: переустановите `sudo "$(which vpnchecker)" install`.
 - **Удаление** — `sudo vpnchecker uninstall` удаляет демон, plist, бинарник, правила pf и DNS shield, размораживает приложения и освобождает токен pf.
 

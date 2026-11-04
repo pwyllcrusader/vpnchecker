@@ -28,7 +28,7 @@ pub struct Snapshot {
     pub vpn: VpnStatus,
     #[serde(default)]
     pub mode: Mode,
-    /// State of the Claude / Cursor protection.
+    /// State of the Claude / Cursor / Rider protection.
     #[serde(default)]
     pub protection: Protection,
     /// Protected processes currently frozen / killed.

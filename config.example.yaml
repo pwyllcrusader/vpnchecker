@@ -1,10 +1,11 @@
 # vpnchecker configuration (~/.config/vpnchecker/config.yaml)
 #
-# Claude and Cursor are ALWAYS protected: while the VPN is down their processes are frozen, lookups for their
-# domains stay on this Mac (dns shield) and their server addresses are refused by the kernel outside the tunnel.
+# Claude, Cursor and Rider are ALWAYS protected: while the VPN is down their processes are frozen. For Claude and
+# Cursor, lookups for their domains also stay on this Mac (dns shield) and their server addresses are refused by the
+# kernel outside the tunnel. Rider is covered by the freeze only.
 # `mode` only decides whether the rest of the machine is restricted as well.
 
-# scoped: only Claude / Cursor are affected. Browser, Slack, Teams, GlobalProtect reconnects, captive portals and
+# scoped: only Claude / Cursor / Rider are affected. Browser, Slack, Teams, GlobalProtect reconnects, captive portals and
 #         split-tunnel traffic keep working while the VPN is down.
 # full:   in addition, ALL outbound traffic is blocked unless it leaves through the VPN interface, goes to the
 #         allowlist below, or is loopback / DNS / DHCP / NTP / ICMPv6.
@@ -52,6 +53,7 @@ protect:
     - '/\.local/share/claude/'
     - '(^|/)claude( |$)'
     - '(^|/)cursor-agent( |$)'
+    - '/Rider\.app/Contents/'
   extra_process_patterns: []
   # Wake and relaunch scan period.
   interval: 250ms

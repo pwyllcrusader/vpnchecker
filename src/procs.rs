@@ -9,7 +9,7 @@ use regex::RegexSet;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-/// Matches the full command line of the apps to protect (Claude, Cursor and their tooling).
+/// Matches the full command line of the apps to protect (Claude, Cursor, Rider and their tooling).
 pub struct Matcher {
     set: RegexSet,
 }
@@ -164,12 +164,16 @@ mod tests {
   301     1 /usr/bin/vim /tmp/notes-about-claude.txt
   400     1 /Users/me/Library/Caches/JetBrains/acp-agents/cursor/dist/cursor-agent
   500     1 /Library/PrivilegedHelperTools/vpnchecker --config /Users/me/.config/vpnchecker/config.yaml run
+  600     1 /Applications/Rider.app/Contents/MacOS/rider
+  601   600 /Applications/Rider.app/Contents/lib/ReSharperHost/macos-arm64/Rider.Backend --runtimeconfig /Applications/Rider.app/Contents/lib/ReSharperHost/Rider.Backend.runtimeconfig.json
+  602   600 /Applications/Rider.app/Contents/bin/fsnotifier
+  700     1 /Applications/JetBrains Toolbox.app/Contents/MacOS/jetbrains-toolbox
 ";
 
     #[test]
     fn parses_ps_output() {
         let procs = parse_ps(PS);
-        assert_eq!(procs.len(), 11);
+        assert_eq!(procs.len(), 15);
         assert_eq!(procs[2].ppid, 100);
         assert!(procs[2].command.ends_with("--type=renderer"));
         assert!(parse_ps("garbage\n\n  x y z\n").is_empty());
@@ -179,8 +183,9 @@ mod tests {
     fn selects_apps_and_all_descendants_only() {
         let procs = parse_ps(PS);
         let picked = select(&procs, &defaults(), &[500]);
-        assert_eq!(picked, vec![100, 101, 102, 103, 200, 201, 400]);
+        assert_eq!(picked, vec![100, 101, 102, 103, 200, 201, 400, 600, 601, 602]);
         assert!(!picked.contains(&300), "Safari is not protected");
+        assert!(!picked.contains(&700), "JetBrains Toolbox is not Rider");
         assert!(!picked.contains(&301), "a file name containing 'claude' is not a process match");
     }
 
