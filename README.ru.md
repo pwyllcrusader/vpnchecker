@@ -41,7 +41,7 @@ macOS выбирает интерфейс до того, как пакет по�
 ## Установка
 
 ```sh
-cargo install --path .
+cargo install vpnchecker      # или из исходников: cargo install --path .
 
 # 1. Создать конфиг и заполнить vpn.subnets и allow.* (см. Конфигурация)
 vpnchecker config init
@@ -163,3 +163,7 @@ cargo test
 cargo clippy --all-targets
 vpnchecker --socket /tmp/vpnchecker.sock run --dry-run -v
 ```
+
+## Лицензия
+
+На выбор: [Apache License, Version 2.0](LICENSE-APACHE) или [MIT](LICENSE-MIT).

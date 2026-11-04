@@ -2,6 +2,14 @@
 name = "vpnchecker"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "VPN kill switch for macOS: outbound traffic leaves only through the VPN (pf), with a wildcard domain allowlist"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pwyllcrusader/vpnchecker"
+readme = "README.md"
+keywords = ["vpn", "killswitch", "macos", "pf", "firewall"]
+categories = ["command-line-utilities", "network-programming"]
+exclude = [".vscode/"]
 
 [dependencies]
 anyhow = "1.0.104"

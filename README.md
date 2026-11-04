@@ -41,7 +41,7 @@ The daemon:
 ## Installation
 
 ```sh
-cargo install --path .
+cargo install vpnchecker      # or from a checkout: cargo install --path .
 
 # 1. Create the config and set vpn.subnets and allow.* (see Configuration)
 vpnchecker config init
@@ -163,3 +163,7 @@ cargo test
 cargo clippy --all-targets
 vpnchecker --socket /tmp/vpnchecker.sock run --dry-run -v
 ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
