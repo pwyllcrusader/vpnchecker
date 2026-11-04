@@ -56,46 +56,24 @@ impl Resolver {
         self.retain = retain;
     }
 
-    /// Returns true if any address was not known before.
-    pub fn learn(&mut self, key: &str, ips: impl IntoIterator<Item = IpAddr>) -> bool {
+    /// Returns the addresses that were not known before.
+    pub fn learn(&mut self, key: &str, ips: impl IntoIterator<Item = IpAddr>) -> Vec<IpAddr> {
         let now = sys::now_unix();
         let entry = self.seen.entry(key.to_string()).or_default();
-        let mut new = false;
+        let mut new = Vec::new();
         for ip in ips {
-            new |= entry.insert(ip, now).is_none();
+            if entry.insert(ip, now).is_none() {
+                new.push(ip);
+            }
         }
         new
     }
 
-    /// Resolves each domain and stores its addresses under the domain itself.
-    pub async fn refresh(&mut self, domains: &[String], limit: Duration) {
-        self.refresh_keyed(domains, None, limit).await;
-    }
-
-    /// Resolves the hosts and stores all addresses under one shared key.
-    pub async fn refresh_into<S: AsRef<str>>(&mut self, key: &str, hosts: &[S], limit: Duration) {
-        let hosts: Vec<String> = hosts.iter().map(|h| h.as_ref().to_string()).collect();
-        self.refresh_keyed(&hosts, Some(key), limit).await;
-    }
-
-    async fn refresh_keyed(&mut self, domains: &[String], key: Option<&str>, limit: Duration) {
-        let handles: Vec<_> = domains
-            .iter()
-            .cloned()
-            .map(|domain| tokio::spawn(async move { (resolve(&domain, limit).await, domain) }))
-            .collect();
-        for handle in handles {
-            let Ok((ips, domain)) = handle.await else {
-                continue;
-            };
-            match ips {
-                Ok(ips) => {
-                    debug!(%domain, ?ips, "resolved");
-                    if self.learn(key.unwrap_or(&domain), ips.iter().copied()) {
-                        info!(%domain, ?ips, "new addresses");
-                    }
-                }
-                Err(e) => debug!(%domain, error = %e, "resolve failed"),
+    /// Stores lookup results under each host, or all under `key`.
+    pub fn learn_resolved(&mut self, key: Option<&str>, resolved: &[(String, Vec<IpAddr>)]) {
+        for (host, ips) in resolved {
+            if !self.learn(key.unwrap_or(host), ips.iter().copied()).is_empty() {
+                info!(%host, ?ips, "new addresses");
             }
         }
         self.prune();
@@ -123,6 +101,27 @@ pub async fn resolve(domain: &str, limit: Duration) -> Result<Vec<IpAddr>, Strin
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("timeout".into()),
     }
+}
+
+/// Resolves hosts concurrently; failures are logged and left out.
+pub async fn resolve_all<S: AsRef<str>>(hosts: &[S], limit: Duration) -> Vec<(String, Vec<IpAddr>)> {
+    let handles: Vec<_> = hosts
+        .iter()
+        .map(|h| h.as_ref().to_string())
+        .map(|host| tokio::spawn(async move { (resolve(&host, limit).await, host) }))
+        .collect();
+    let mut out = Vec::new();
+    for handle in handles {
+        match handle.await {
+            Ok((Ok(ips), host)) => {
+                debug!(%host, ?ips, "resolved");
+                out.push((host, ips));
+            }
+            Ok((Err(e), host)) => debug!(%host, error = %e, "resolve failed"),
+            Err(_) => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]

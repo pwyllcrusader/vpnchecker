@@ -24,7 +24,7 @@ The daemon:
 
 - **Tracks the VPN interface.** The VPN is up when an interface matching `interface_pattern` has an address from `vpn.subnets` **and** the default route goes through it (GlobalProtect keeps `utunN` with a pool address after disconnect, so the interface alone is not enough). Checks run immediately on every kernel routing / address / interface change (`PF_ROUTE` socket) and by `check.interval` as a fallback. If the interface changes (`utun4` → `utun5`), the rule is rewritten.
 - **Keeps the allowlist current** so the VPN client can reconnect while everything is blocked:
-  - `allow.domains` are re-resolved every `resolve_interval` and right after the VPN drops (split-horizon DNS answers differently on and off the VPN);
+  - `allow.domains` cover each domain **and all its subdomains**. The daemon runs a DNS forwarder on `127.0.0.1:10053` and writes `/etc/resolver/<domain>` for each entry, so every lookup under it goes through the forwarder; addresses from the answer enter the pf allow table *before* the answer reaches the app. Upstream is taken from `scutil --dns` per query (VPN split DNS keeps working). The domains themselves are also re-resolved every `resolve_interval` and right after the VPN drops (split-horizon DNS answers differently on and off the VPN);
   - `allow.globalprotect` discovers the portal (`Portal` / `LastUrl` in the GlobalProtect settings plists) and gateways (host names in `pan_gp_event.log`). While the VPN is down the log is followed on every check, so a gateway the client has just started trying is allowed within seconds;
   - `allow.learn_gateways` adds VPN gateways seen as host routes outside the tunnel while the VPN is up;
   - every seen address is kept for `resolve_retain` and persisted in `/var/db/vpnchecker/cache.json`.
@@ -70,6 +70,7 @@ vpnchecker status
 | `check [-q]` | no | Check the VPN once. Exit code: `0` up, `1` down, `2` error |
 | `diagnose` | no | Interfaces, checks, resolved allowlist domains, discovered GlobalProtect hosts, learned VPN gateways |
 | `reload` | owner | Reload the config in the running daemon (same as `SIGHUP`) |
+| `allow <domain\|URL>` | owner | Add a domain (with subdomains) to `allow.domains` in the config, keeping comments, and reload the daemon |
 | `logs [-f] [-n N]` | no | Show `/var/log/vpnchecker.log` |
 | `config init [--force]` / `validate` / `path` | no | Manage the config file |
 | `run [--dry-run]` | yes (no with `--dry-run`) | Run in the foreground. `--dry-run` logs rules instead of applying them |
@@ -89,9 +90,9 @@ allow:
   lan: true                  # RFC1918, link-local, multicast, IPv6 ULA
   learn_gateways: true       # auto-allow VPN gateways seen in the routing table
   globalprotect: true        # auto-allow portal/gateways from GlobalProtect settings and log
-  domains:                   # extra VPN portal / gateway hosts
+  domains:                   # allowed without the VPN, with all subdomains
     - vpn.example.corp
-    - us-east-g-example.gw.gpcloudservice.com
+    - example.com            # also www.example.com, api.example.com, ...
   cidrs: [203.0.113.5/32]
 
 check:
@@ -103,7 +104,7 @@ check:
 notify: true
 ```
 
-**What to put into `allow`:** with GlobalProtect usually nothing — `globalprotect` and `learn_gateways` find the portal and gateways (check with `vpnchecker diagnose`). Add hosts manually only for what they cannot see: other VPN clients, or the identity provider if SAML login opens its page while the tunnel is down.
+**What to put into `allow`:** for the VPN itself with GlobalProtect usually nothing — `globalprotect` and `learn_gateways` find the portal and gateways (check with `vpnchecker diagnose`). Add hosts manually for what they cannot see (other VPN clients, the identity provider if SAML login opens its page while the tunnel is down) and for services that should keep working without the VPN: `vpnchecker allow telegram.org`.
 
 **`vpn.subnets`:** the address pool the VPN assigns. Look at the `utunN` address with the VPN connected (`ifconfig`); GlobalProtect also lists previously assigned addresses in `defaults read /Library/Preferences/com.paloaltonetworks.GlobalProtect.settings` (`PreferredIP_*`).
 
@@ -152,6 +153,7 @@ pf already blocks the traffic, but a hook gives a clear message instead of a net
 - **No protection while stopped:** `stop`, `flush` and `uninstall` remove the rules, and after a reboot nothing is filtered until launchd starts the daemon. Quit apps that must not go out directly before stopping it.
 - **Not per-process:** the rules apply to the whole machine. Per-process filtering requires a NetworkExtension.
 - **DNS** (port 53) is allowed to any server, so name lookups go to the local resolver while the VPN is down.
+- **Apps with their own DNS** (DoH, hardcoded resolvers) bypass `/etc/resolver`: subdomains of allowed domains they look up are not learned and stay blocked.
 - **IPv6:** blocked unless it goes through the tunnel or to the allowlist.
 
 ## Development

@@ -19,7 +19,9 @@ allow:
   # Allow the portal (GlobalProtect settings) and gateways (pan_gp_event.log) automatically.
   # While the VPN is down the log is followed, so a newly tried gateway is allowed within seconds.
   globalprotect: true
-  # Extra VPN portal / gateway hosts the VPN client must reach to (re)connect
+  # Hosts reachable without the VPN, each with all its subdomains ('*.' prefix optional, quote it).
+  # Add from the CLI: `vpnchecker allow example.com`. Subdomain addresses are learned by a local
+  # DNS forwarder (/etc/resolver/<domain>), also VPN portal / gateway hosts the client must reach.
   domains: []
   #  - vpn.example.corp
   cidrs: []

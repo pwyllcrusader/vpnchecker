@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
+use std::net::IpAddr;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -29,9 +30,8 @@ pub fn render(via: Option<&Via>, allow: &BTreeSet<IpNet>) -> String {
     if let Some(Via::Subnets(subnets)) = via {
         rules += &table(VPN_TABLE, subnets);
     }
-    if !allow.is_empty() {
-        rules += &table(ALLOW_TABLE, allow);
-    }
+    // Declared even when empty: the DNS forwarder adds addresses to it between reloads.
+    rules += &table(ALLOW_TABLE, allow);
     rules += "pass out quick on lo0 all\n";
     match via {
         // if-bound: a floating state would keep passing tunnel connections that fall back to en0.
@@ -46,16 +46,26 @@ pub fn render(via: Option<&Via>, allow: &BTreeSet<IpNet>) -> String {
     rules += "pass out quick proto { tcp udp } to any port 53 keep state\n";
     rules += "pass out quick proto udp to any port { 67 68 123 546 547 } keep state\n";
     rules += "pass out quick inet6 proto icmp6 all keep state\n";
-    if !allow.is_empty() {
-        rules += &format!("pass out quick to <{ALLOW_TABLE}> keep state\n");
-    }
+    rules += &format!("pass out quick to <{ALLOW_TABLE}> keep state\n");
     rules += "block return out quick all\n";
     rules
 }
 
 fn table(name: &str, addrs: &BTreeSet<IpNet>) -> String {
+    if addrs.is_empty() {
+        return format!("table <{name}> persist\n");
+    }
     let list: Vec<String> = addrs.iter().map(ToString::to_string).collect();
     format!("table <{name}> persist {{ {} }}\n", list.join(", "))
+}
+
+/// Adds addresses to the loaded allow table without reloading the ruleset.
+pub fn allow_add(ips: &[IpAddr]) -> Result<()> {
+    let ips: Vec<String> = ips.iter().map(ToString::to_string).collect();
+    let mut args = vec!["-a", ANCHOR, "-t", ALLOW_TABLE, "-T", "add"];
+    args.extend(ips.iter().map(String::as_str));
+    pfctl(&args, None)?;
+    Ok(())
 }
 
 pub fn valid_interface_name(name: &str) -> bool {
@@ -177,7 +187,7 @@ mod tests {
     #[test]
     fn no_vpn_blocks_everything_but_essentials() {
         let rules = render(None, &BTreeSet::new());
-        assert!(!rules.contains("table"));
+        assert!(rules.starts_with("table <vpnchecker_allow> persist\n"));
         assert!(!rules.contains("utun"));
         assert!(rules.ends_with("block return out quick all\n"));
 

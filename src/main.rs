@@ -1,6 +1,7 @@
 mod config;
 mod daemon;
 mod detect;
+mod dnsproxy;
 mod globalprotect;
 mod ipc;
 mod launchd;
@@ -58,6 +59,11 @@ enum Command {
     },
     /// Ask the running daemon to reload its config
     Reload,
+    /// Allow a domain and all its subdomains without the VPN (adds it to the config and reloads)
+    Allow {
+        /// Domain or URL, e.g. example.com, *.example.com, https://example.com/path
+        mask: String,
+    },
     /// Show interfaces, VPN checks, allowlist and detected VPN gateways
     Diagnose,
     /// Install and start the launchd daemon (root)
@@ -138,6 +144,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             ipc::request(socket, &Request::Reload).await?;
             println!("reloaded");
         }
+        Command::Allow { mask } => allow(&config_path, socket, &mask).await?,
         Command::Diagnose => diagnose(&config_path).await?,
         Command::Install => launchd::install(&config_path, socket)?,
         Command::Uninstall => launchd::uninstall(socket)?,
@@ -153,6 +160,29 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Config(cmd) => config_command(cmd, &config_path)?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn allow(config_path: &Path, socket: &Path, mask: &str) -> Result<()> {
+    let domain = config::normalize_mask(mask)?;
+    let text = fs::read_to_string(config_path).with_context(|| format!("reading {}", config_path.display()))?;
+    let cfg = config::parse(&text).with_context(|| format!("invalid config {}", config_path.display()))?;
+    if let Some(zone) = config::covering_zone(&cfg.allow.domains, &domain) {
+        println!("{domain} is already allowed by {zone}");
+        return Ok(());
+    }
+    let updated = config::insert_allow_domain(&text, &domain)?;
+    let check = config::parse(&updated).context("edited config does not parse, left unchanged")?;
+    if !check.allow.domains.contains(&domain) {
+        bail!("could not add {domain} to allow.domains, edit {} manually", config_path.display());
+    }
+    // Written in place: the daemon trusts the config owner, a rename could change it.
+    fs::write(config_path, updated).with_context(|| format!("writing {}", config_path.display()))?;
+    println!("allowed {domain} and its subdomains in {}", config_path.display());
+    match ipc::request(socket, &Request::Reload).await {
+        Ok(_) => println!("daemon reloaded"),
+        Err(e) => println!("daemon not reloaded ({e:#}), the change applies on next start"),
+    }
+    Ok(())
 }
 
 async fn check(config_path: &Path, quiet: bool) -> Result<ExitCode> {
@@ -221,11 +251,12 @@ async fn diagnose(config_path: &Path) -> Result<()> {
     println!("\nVPN: {:?}", status.state);
     print_checks(&status.checks);
 
-    println!("\nAllowlist domains:");
+    println!("\nAllowlist domains (with subdomains):");
     for domain in &cfg.allow.domains {
+        let via = dnsproxy::resolver_file_state(domain);
         match resolver::resolve(domain, cfg.check.timeout).await {
-            Ok(ips) => println!("  {domain} -> {ips:?}"),
-            Err(e) => println!("  {domain} -> {e}"),
+            Ok(ips) => println!("  {domain} [{via}] -> {ips:?}"),
+            Err(e) => println!("  {domain} [{via}] -> {e}"),
         }
     }
 

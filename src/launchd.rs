@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use nix::unistd::{Gid, Uid, chown};
 
-use crate::{config, pf, sys};
+use crate::{config, dnsproxy, pf, sys};
 
 pub const LABEL: &str = "com.vpnchecker.daemon";
 pub const LOG: &str = "/var/log/vpnchecker.log";
@@ -54,6 +54,7 @@ pub fn uninstall(socket: &Path) -> Result<()> {
     }
     pf::flush()?;
     pf::release_saved_token();
+    dnsproxy::remove_resolver_files()?;
     let _ = fs::remove_file(socket);
     println!("uninstalled {LABEL}, pf rules removed");
     Ok(())
@@ -74,6 +75,8 @@ pub fn start() -> Result<()> {
 pub fn stop(keep_block: bool) -> Result<()> {
     sys::require_root()?;
     unload()?;
+    // Without the daemon these files would point allowed domains at a dead forwarder.
+    dnsproxy::remove_resolver_files()?;
     if keep_block {
         println!("stopped, pf rules kept");
     } else {

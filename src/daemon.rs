@@ -13,9 +13,10 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::{self, Config, GLOBALPROTECT_HOSTS, LEARNED_GATEWAYS};
 use crate::detect::{self, VpnState, VpnStatus};
+use crate::dnsproxy::{self, Proxy};
 use crate::ipc::{self, Control, Shared, Snapshot};
 use crate::pf::{self, Pf, Via};
-use crate::resolver::Resolver;
+use crate::resolver::{self, Resolver};
 use crate::{globalprotect, notify, routewatch, sys};
 
 // Survives restarts so exit rules and reconnects know addresses seen on and off the VPN.
@@ -25,7 +26,10 @@ struct Daemon {
     config_path: PathBuf,
     cfg: Config,
     pf: Pf,
-    resolver: Resolver,
+    // Shared with the DNS forwarder; held while the ruleset is reloaded.
+    resolver: Arc<Mutex<Resolver>>,
+    proxy: Option<Arc<Proxy>>,
+    dry_run: bool,
     vpn: VpnStatus,
     shared: Shared,
     notify_uid: Option<u32>,
@@ -64,15 +68,24 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     }
 
     let cache = (!dry_run).then(|| PathBuf::from(CACHE));
-    let resolver = match &cache {
+    let resolver = Arc::new(Mutex::new(match &cache {
         Some(path) => Resolver::load(path, cfg.check.resolve_retain),
         None => Resolver::new(cfg.check.resolve_retain),
+    }));
+    let proxy = match Proxy::start(resolver.clone(), dry_run).await {
+        Ok(proxy) => Some(proxy),
+        Err(e) => {
+            warn!("dns forwarder disabled, subdomains of allow.domains are not learned: {e:#}");
+            None
+        }
     };
     let mut d = Daemon {
         config_path,
         cfg,
         pf,
         resolver,
+        proxy,
+        dry_run,
         vpn: VpnStatus::default(),
         shared,
         notify_uid,
@@ -85,6 +98,7 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
 
     // Close everything right away with cached addresses, before DNS and detection.
     d.apply();
+    d.sync_zones();
     d.check().await;
     d.resolve().await;
     d.apply();
@@ -104,6 +118,7 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
         tokio::select! {
             _ = route_events.notified() => {
                 debug!("routing change, rechecking");
+                d.refresh_upstreams();
                 d.check().await;
             }
             _ = check_tick.tick() => d.check().await,
@@ -128,6 +143,9 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     info!("exiting, leaving rules that pass only traffic sourced from vpn.subnets");
     d.apply_via(Some(&Via::Subnets(d.cfg.vpn_subnets())));
     d.save_cache();
+    if d.proxy.is_some() && !dry_run {
+        let _ = dnsproxy::remove_resolver_files();
+    }
     let _ = std::fs::remove_file(socket);
     Ok(())
 }
@@ -143,31 +161,50 @@ impl Daemon {
         (check, resolve)
     }
 
-    fn allowed(&self) -> BTreeSet<IpNet> {
-        let mut addrs = self.cfg.allow_cidrs();
-        let keys = self.cfg.allow_keys();
-        addrs.extend(self.resolver.ips(&keys).into_iter().map(IpNet::from));
-        addrs
-    }
-
     fn apply(&mut self) {
         let via = self.vpn.interface.clone().map(Via::Interface);
         self.apply_via(via.as_ref());
     }
 
     fn apply_via(&mut self, via: Option<&Via>) {
-        let allowed = self.allowed();
+        let resolver = self.resolver.lock().unwrap();
+        let mut allowed = self.cfg.allow_cidrs();
+        allowed.extend(resolver.ips(&self.cfg.allow_keys()).into_iter().map(IpNet::from));
         let rules = pf::render(via, &allowed);
         match self.pf.apply(&rules) {
             Ok(true) => info!(?via, allowed = allowed.len(), "pf rules updated"),
             Ok(false) => {}
             Err(e) => error!("applying pf rules failed (will retry): {e:#}"),
         }
+        drop(resolver);
         self.shared.lock().unwrap().allowed = allowed.len();
     }
 
+    /// Routes allow.domains (with subdomains) through the DNS forwarder.
+    fn sync_zones(&self) {
+        let Some(proxy) = &self.proxy else {
+            return;
+        };
+        let zones = &self.cfg.allow.domains;
+        proxy.set_zones(zones);
+        if self.dry_run {
+            info!(?zones, "[dry-run] not writing {}/<zone> files", dnsproxy::RESOLVER_DIR);
+        } else if dnsproxy::sync_resolver_files(zones) {
+            info!(?zones, "resolver files updated");
+            dnsproxy::flush_dns_cache();
+        }
+    }
+
+    fn refresh_upstreams(&self) {
+        if let Some(proxy) = &self.proxy {
+            proxy.refresh_upstreams();
+        }
+    }
+
     async fn resolve(&mut self) {
-        self.resolver.refresh(&self.cfg.allow.domains, self.cfg.check.timeout).await;
+        self.refresh_upstreams();
+        let resolved = resolver::resolve_all(&self.cfg.allow.domains, self.cfg.check.timeout).await;
+        self.resolver.lock().unwrap().learn_resolved(None, &resolved);
         if self.cfg.allow.globalprotect {
             let hosts = globalprotect::discover(self.user_home.as_deref());
             if hosts != self.gp_hosts {
@@ -175,7 +212,8 @@ impl Daemon {
                 self.gp_hosts = hosts;
             }
             let hosts: Vec<&String> = self.gp_hosts.iter().collect();
-            self.resolver.refresh_into(GLOBALPROTECT_HOSTS, &hosts, self.cfg.check.timeout).await;
+            let resolved = resolver::resolve_all(&hosts, self.cfg.check.timeout).await;
+            self.resolver.lock().unwrap().learn_resolved(Some(GLOBALPROTECT_HOSTS), &resolved);
         }
         self.save_cache();
     }
@@ -195,7 +233,7 @@ impl Daemon {
 
     fn save_cache(&self) {
         if let Some(path) = &self.cache
-            && let Err(e) = self.resolver.save(path)
+            && let Err(e) = self.resolver.lock().unwrap().save(path)
         {
             warn!("saving cache {} failed: {e:#}", path.display());
         }
@@ -209,7 +247,8 @@ impl Daemon {
             return;
         };
         let gateways = detect::gateway_routes(&re);
-        if self.resolver.learn(LEARNED_GATEWAYS, gateways.iter().map(|(ip, _)| IpAddr::V4(*ip))) {
+        let new = self.resolver.lock().unwrap().learn(LEARNED_GATEWAYS, gateways.iter().map(|(ip, _)| IpAddr::V4(*ip)));
+        if !new.is_empty() {
             info!(?gateways, "learned VPN gateways");
             self.save_cache();
         }
@@ -261,9 +300,10 @@ impl Daemon {
                 for w in cfg.warnings() {
                     warn!("{w}");
                 }
-                self.resolver.set_retain(cfg.check.resolve_retain);
+                self.resolver.lock().unwrap().set_retain(cfg.check.resolve_retain);
                 self.cfg = cfg;
                 info!("config reloaded");
+                self.sync_zones();
                 self.resolve().await;
                 self.check().await;
                 true
