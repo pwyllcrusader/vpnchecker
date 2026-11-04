@@ -18,7 +18,7 @@ humantime = "2.4.0"
 humantime-serde = "1.1.1"
 if-addrs = "0.15.0"
 ipnet = { version = "2.12.2", features = ["serde"] }
-nix = { version = "0.31.3", features = ["user", "fs", "socket"] }
+nix = { version = "0.31.3", features = ["user", "fs", "socket", "signal"] }
 plist = "1.10.3"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }

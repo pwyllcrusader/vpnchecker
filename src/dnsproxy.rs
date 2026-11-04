@@ -338,8 +338,9 @@ fn resolver_file() -> String {
     format!("{MARKER}\nnameserver 127.0.0.1\nport {PORT}\n")
 }
 
+/// Exact first line only: the DNS shield writes a longer marker and its files are not ours to remove.
 fn is_managed(path: &Path) -> bool {
-    fs::read_to_string(path).is_ok_and(|text| text.starts_with(MARKER))
+    fs::read_to_string(path).is_ok_and(|text| text.lines().next() == Some(MARKER))
 }
 
 /// Points the system resolver at the forwarder for each zone. Returns true if anything changed.

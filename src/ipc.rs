@@ -10,7 +10,9 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use crate::config::Mode;
 use crate::detect::VpnStatus;
+use crate::guard::Protection;
 
 pub const DEFAULT_SOCKET: &str = "/var/run/vpnchecker.sock";
 
@@ -24,6 +26,20 @@ pub struct Snapshot {
     pub last_check: u64,
     pub allowed: usize,
     pub vpn: VpnStatus,
+    #[serde(default)]
+    pub mode: Mode,
+    /// State of the Claude / Cursor / Rider protection.
+    #[serde(default)]
+    pub protection: Protection,
+    /// Protected processes currently frozen / killed.
+    #[serde(default)]
+    pub frozen: usize,
+    /// Claude / Cursor server addresses blocked outside the tunnel.
+    #[serde(default)]
+    pub protected_ips: usize,
+    /// Local DNS shield for the protected domains is active.
+    #[serde(default)]
+    pub shield: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

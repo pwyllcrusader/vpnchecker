@@ -1,27 +1,86 @@
 # vpnchecker configuration (~/.config/vpnchecker/config.yaml)
 #
-# All outbound traffic is blocked unless it leaves through the VPN interface,
-# goes to the allowlist below, or is loopback / DNS / DHCP / NTP / ICMPv6.
+# Claude, Cursor and Rider are ALWAYS protected: while the VPN is down their processes are frozen. For Claude and
+# Cursor, lookups for their domains also stay on this Mac (dns shield) and their server addresses are refused by the
+# kernel outside the tunnel. Rider is covered by the freeze only.
+# `mode` only decides whether the rest of the machine is restricted as well.
+
+# full (default): in addition, ALL outbound traffic is blocked unless it leaves through the VPN interface, goes to
+#         the allowlist below, or is loopback / DNS / DHCP / NTP / ICMPv6.
+# scoped: only Claude / Cursor / Rider are affected. Browser, Slack, Teams, GlobalProtect reconnects, captive portals and
+#         split-tunnel traffic keep working while the VPN is down.
+mode: full
 
 vpn:
   # GlobalProtect creates utunN (older versions: gpd0)
   interface_pattern: '^(utun\d+|gpd\d+)$'
-  # VPN address pool (required). The VPN is up when an interface with an address from these
-  # subnets exists AND the default route goes through it.
+  # VPN address pool (required). The VPN is up when an interface with an address from these subnets exists AND
+  # the default route goes through it. GlobalProtect hands out a different address on each connect: use the pool.
   subnets:
     - 10.0.0.0/8
+  # Also treat the VPN as down when GlobalProtect itself reports a disconnected tunnel (DEM block of its settings).
+  check_globalprotect: true
+
+protect:
+  # stop: freeze (SIGSTOP) while the VPN is down, resume (SIGCONT) afterwards: nothing is lost.
+  # kill: SIGTERM, then SIGKILL.
+  action: stop
+  # Lookups for these domains (and their subdomains) never leave the Mac while the VPN is down.
+  dns_shield: true
+  dns_port: 5399
+  domains: [anthropic.com, claude.ai, claude.com, cursor.sh, cursor.com]
+  # Server addresses of these hosts are refused outside the tunnel (resolved while the VPN is up).
+  pf_block: true
+  hosts:
+    - api.anthropic.com
+    - claude.ai
+    - console.anthropic.com
+    - statsig.anthropic.com
+    - cursor.com
+    - api2.cursor.sh
+    - api3.cursor.sh
+    - repo.cursor.sh
+  # Also learn server addresses from the sockets of these apps. Catches rotating cloud addresses, but also GitHub,
+  # CDNs and whatever else they talk to, which then become unreachable for every app while the VPN is down.
+  observe_connections: false
+  # Regexes against the full command line. A match and all of its children (MCP servers, terminals, extension hosts)
+  # are protected. Add your own under extra_process_patterns.
+  process_patterns:
+    - '/Claude\.app/Contents/'
+    - '/Cursor\.app/Contents/'
+    - '/\.cursor/(extensions|bin|cursor-server)/'
+    - '@anthropic-ai/claude-code'
+    - '/\.local/share/claude/'
+    - '(^|/)claude( |$)'
+    - '(^|/)cursor-agent( |$)'
+    - '/Rider\.app/Contents/'
+  extra_process_patterns: []
+  # Wake and relaunch scan period.
+  interval: 250ms
+  # A pause between two ticks longer than this means the Mac slept: freeze first, verify the VPN afterwards,
+  # and stay frozen for at least wake_hold (GlobalProtect can still show a dead tunnel as up right after wake).
+  wake_gap: 3s
+  wake_hold: 5s
+  # Consecutive good checks (spread over interval x (n-1)) required before the apps are resumed.
+  resume_checks: 4
 
 allow:
+  # Used in `full` mode, and to keep VPN gateways out of the protected set.
   # RFC1918, link-local, multicast and IPv6 ULA
   lan: true
   # Allow VPN gateways seen as host routes outside the tunnel while the VPN is up
   learn_gateways: true
-  # Allow the portal (GlobalProtect settings) and gateways (pan_gp_event.log) automatically.
-  # While the VPN is down the log is followed, so a newly tried gateway is allowed within seconds.
+  # Allow the portal (GlobalProtect settings), the gateway GlobalProtect reports itself (current connection) and
+  # gateways from pan_gp_event.log automatically. While the VPN is down the logs are followed, so a gateway the client
+  # has just started trying is allowed within seconds.
   globalprotect: true
+  # Host names that only appear in the user-writable event log are trusted when they end in one of these suffixes
+  # (portals and the gateway GlobalProtect reports itself are always trusted).
+  gateway_suffixes: [gpcloudservice.com]
   # Hosts reachable without the VPN, each with all its subdomains ('*.' prefix optional, quote it).
   # Add from the CLI: `vpnchecker allow example.com`. Subdomain addresses are learned by a local
   # DNS forwarder (/etc/resolver/<domain>), also VPN portal / gateway hosts the client must reach.
+  # A domain cannot be listed here and under protect.domains at the same time.
   domains: []
   #  - vpn.example.corp
   cidrs: []
@@ -35,5 +94,5 @@ check:
   resolve_interval: 60s
   resolve_retain: 24h
 
-# macOS notification when the VPN goes up / down
+# macOS notification when the protection blocks / resumes the apps
 notify: true

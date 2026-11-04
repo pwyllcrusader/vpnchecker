@@ -2,11 +2,14 @@ mod config;
 mod daemon;
 mod detect;
 mod dnsproxy;
+mod dnsshield;
 mod globalprotect;
+mod guard;
 mod ipc;
 mod launchd;
 mod notify;
 mod pf;
+mod procs;
 mod resolver;
 mod routewatch;
 mod sys;
@@ -24,7 +27,7 @@ use crate::detect::VpnState;
 use crate::ipc::Request;
 
 #[derive(Parser)]
-#[command(version, about = "VPN kill switch for macOS: outbound traffic leaves only through the VPN (pf)")]
+#[command(version, about = "VPN kill switch for macOS: Claude, Cursor and Rider (optionally the whole machine) reach the internet only through the VPN")]
 struct Cli {
     /// Config file [default: ~/.config/vpnchecker/config.yaml]
     #[arg(long, global = true, env = "VPNCHECKER_CONFIG")]
@@ -66,13 +69,15 @@ enum Command {
     },
     /// Show interfaces, VPN checks, allowlist and detected VPN gateways
     Diagnose,
+    /// List the Claude / Cursor / Rider processes the protection covers (STAT T = frozen)
+    Procs,
     /// Install and start the launchd daemon (root)
     Install,
     /// Stop and remove the launchd daemon and pf rules (root)
     Uninstall,
     /// Start the installed daemon (root)
     Start,
-    /// Stop the daemon and remove its pf rules (root)
+    /// Stop the daemon, remove its pf rules, resume frozen apps and remove the dns shield (root)
     Stop {
         /// Keep the exit rules (pass only traffic sourced from vpn.subnets)
         #[arg(long)]
@@ -146,10 +151,11 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Allow { mask } => allow(&config_path, socket, &mask).await?,
         Command::Diagnose => diagnose(&config_path).await?,
+        Command::Procs => procs_command(&config_path).await?,
         Command::Install => launchd::install(&config_path, socket)?,
-        Command::Uninstall => launchd::uninstall(socket)?,
+        Command::Uninstall => launchd::uninstall(&config_path, socket).await?,
         Command::Start => launchd::start()?,
-        Command::Stop { keep_block } => launchd::stop(keep_block)?,
+        Command::Stop { keep_block } => launchd::stop(&config_path, keep_block).await?,
         Command::Restart => launchd::restart()?,
         Command::Flush => {
             sys::require_root()?;
@@ -217,12 +223,25 @@ async fn status(socket: &Path, json: bool) -> Result<()> {
         humantime::format_duration(Duration::from_secs(secs)).to_string()
     };
     let iface = snap.vpn.interface.as_deref().map(|i| format!(" ({i})")).unwrap_or_default();
-    let traffic = match snap.vpn.state {
-        VpnState::Up => "through the VPN only",
-        _ => "BLOCKED (allowlist only)",
+    let traffic = match (snap.mode, snap.vpn.state) {
+        (config::Mode::Full, VpnState::Up) => "through the VPN only (whole machine)",
+        (config::Mode::Full, _) => "BLOCKED (allowlist only)",
+        (config::Mode::Scoped, _) => "only Claude / Cursor / Rider are restricted",
     };
     println!("vpn:        {:?}{iface} for {}", snap.vpn.state, ago(snap.since));
-    println!("traffic:    {traffic}{}", if snap.dry_run { " (dry-run)" } else { "" });
+    if let Some(gp) = &snap.vpn.globalprotect {
+        let gateway = gp.gateway_host.as_deref().unwrap_or("?");
+        let ip = gp.gateway_ip.map(|i| format!(" ({i})")).unwrap_or_default();
+        println!("globalprot: {} via {gateway}{ip}", gp.status);
+    }
+    println!("mode:       {:?}: {traffic}{}", snap.mode, if snap.dry_run { " (dry-run)" } else { "" });
+    println!(
+        "protection: {:?}, {} processes frozen, dns shield {}, {} server addresses blocked outside the tunnel",
+        snap.protection,
+        snap.frozen,
+        if snap.shield { "ON" } else { "off" },
+        snap.protected_ips
+    );
     println!("allowlist:  {} addresses", snap.allowed);
     println!("last check: {} ago", ago(snap.last_check));
     println!("config:     {}", snap.config);
@@ -265,7 +284,17 @@ async fn diagnose(config_path: &Path) -> Result<()> {
             .and_then(|uid| nix::unistd::User::from_uid(uid).ok().flatten())
             .map(|user| user.dir);
         println!("\nGlobalProtect hosts (settings + {}):", globalprotect::EVENT_LOG);
-        let hosts = globalprotect::discover(home.as_deref());
+        match globalprotect::connection() {
+            Some(c) => println!(
+                "  connection: {} gateway {} {} tunnel {}",
+                c.status,
+                c.gateway_host.as_deref().unwrap_or("?"),
+                c.gateway_ip.map(|i| i.to_string()).unwrap_or_default(),
+                c.tunnel_ip.map(|i| i.to_string()).unwrap_or_default()
+            ),
+            None => println!("  connection: no GlobalProtect state found"),
+        }
+        let hosts = globalprotect::discover(home.as_deref(), &cfg.allow.gateway_suffixes);
         if hosts.is_empty() {
             println!("  none found");
         }
@@ -277,6 +306,15 @@ async fn diagnose(config_path: &Path) -> Result<()> {
         }
     }
 
+    println!("\nProtected servers (mode {:?}; blocked outside the tunnel):", cfg.mode);
+    for host in &cfg.protect.hosts {
+        match resolver::resolve(host, cfg.check.timeout).await {
+            Ok(ips) => println!("  {host} -> {ips:?}"),
+            Err(e) => println!("  {host} -> {e}"),
+        }
+    }
+    println!("dns shield domains: {}", cfg.protect.domains.join(", "));
+
     println!("\nVPN gateways (host routes outside the tunnel, learned automatically):");
     let gateways = detect::gateway_routes(&re);
     if gateways.is_empty() {
@@ -284,6 +322,23 @@ async fn diagnose(config_path: &Path) -> Result<()> {
     }
     for (dest, iface) in gateways {
         println!("  {dest}/32 via {iface}");
+    }
+    Ok(())
+}
+
+async fn procs_command(config_path: &Path) -> Result<()> {
+    let protect = config::protect_or_default(config_path);
+    let matcher = procs::Matcher::new(&protect.patterns())?;
+    let all = procs::list().await;
+    let pids = procs::select(&all, &matcher, &[std::process::id() as i32]);
+    if pids.is_empty() {
+        println!("no Claude / Cursor / Rider processes running");
+    }
+    for pid in pids {
+        let stat = Process::new("/bin/ps").args(["-o", "stat=", "-p", &pid.to_string()]).output().ok();
+        let stat = stat.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+        let command = all.iter().find(|p| p.pid == pid).map(|p| p.command.as_str()).unwrap_or("?");
+        println!("{pid:>7} {stat:<4} {}", command.chars().take(110).collect::<String>());
     }
     Ok(())
 }
@@ -310,8 +365,9 @@ fn config_command(cmd: ConfigCommand, path: &Path) -> Result<()> {
                 println!("warning: {w}");
             }
             println!(
-                "{} is valid: {} vpn subnets, {} allow domains, {} allow cidrs (lan: {}), learn_gateways: {}, globalprotect: {}",
+                "{} is valid: mode {:?}, {} vpn subnets, {} allow domains, {} allow cidrs (lan: {}), learn_gateways: {}, globalprotect: {}",
                 path.display(),
+                cfg.mode,
                 cfg.vpn.subnets.len(),
                 cfg.allow.domains.len(),
                 cfg.allow.cidrs.len(),
