@@ -29,9 +29,10 @@ use crate::{globalprotect, launchd, notify, routewatch, sys, update};
 // Survives restarts so exit rules and reconnects know addresses seen on and off the VPN.
 const CACHE: &str = "/var/db/vpnchecker/cache.json";
 // The first update check waits until the daemon has settled; afterwards `update.interval` applies. The poll only
-// decides how soon a check that was due while the VPN was down is caught up.
+// compares two instants, so it is frequent: it decides how punctual the first check is and how soon a check that
+// was due while the VPN was down is caught up.
 const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(5 * 60);
-const UPDATE_POLL: Duration = Duration::from_secs(10 * 60);
+const UPDATE_POLL: Duration = Duration::from_secs(60);
 
 struct Daemon {
     config_path: PathBuf,
