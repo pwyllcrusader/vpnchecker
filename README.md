@@ -56,7 +56,7 @@ block return out quick to <vpnchecker_protected>
 
 **Surviving its own exit.** On `SIGTERM` / `SIGINT` the daemon leaves rules that pass only traffic *sourced from `vpn.subnets`*, frozen apps stay frozen and the DNS shield stays up; launchd restarts the daemon, and `vpnchecker stop` releases everything. On a crash or `SIGKILL` the last loaded rules stay in pf.
 
-**Updates.** With `update.auto: true` (default) the installed daemon looks at this repository's GitHub releases every `update.interval` (24h), and only while the VPN is verified up, so the download leaves through the tunnel and the restart never happens while the apps are blocked. A newer release is downloaded into a root-only directory, checked against the release's SHA-256 file, has to report the announced version and has to accept the current config. Only then does it replace the binary, by rename; the daemon exits like on `SIGTERM`, leaving its exit rules in place, and launchd starts the new version within seconds. Pre-release tags are ignored and it never downgrades. `update.auto: false` turns it off; `sudo vpnchecker update` updates on demand and `vpnchecker update --check` only reports.
+**Updates.** With `update.auto: true` (default) the installed daemon looks at this repository's GitHub releases every `update.interval` (24h), and only while the VPN is verified up, so the download leaves through the tunnel and the restart never happens while the apps are blocked. When it finds a newer one it **asks first** (`update.confirm: true`, default): a dialog in your session offers *Update*, *Later* (asked again after `update.interval`) and *Skip This Version* (not asked again until a newer release appears). Nothing is downloaded without a yes; an unanswered dialog closes after five minutes and counts as later, and with nobody logged in nothing is installed. `update.confirm: false` installs unattended. After a yes, the release is downloaded into a root-only directory, checked against the release's SHA-256 file, has to report the announced version and has to accept the current config. Only then does it replace the binary, by rename; the daemon exits like on `SIGTERM`, leaving its exit rules in place, and launchd starts the new version within seconds. Pre-release tags are ignored and it never downgrades. `update.auto: false` turns it off; `sudo vpnchecker update` updates on demand and `vpnchecker update --check` only reports.
 
 ## Requirements
 
@@ -77,7 +77,7 @@ To restrict only Claude / Cursor / Rider and leave the rest of the Mac alone, pa
 curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh -s -- --mode scoped
 ```
 
-The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), runs `sudo vpnchecker install` and links `/usr/local/bin/vpnchecker`. `--mode scoped|full` (or `VPNCHECKER_MODE`) sets `mode` in the config, also when the config already exists; without it a new config starts in `full`. From then on the daemon keeps itself up to date (see **Updates** above); `sudo vpnchecker update` or the same command updates at once. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
+The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), runs `sudo vpnchecker install` and links `/usr/local/bin/vpnchecker`. `--mode scoped|full` (or `VPNCHECKER_MODE`) sets `mode` in the config, also when the config already exists; without it a new config starts in `full`. From then on the daemon offers new releases by itself (see **Updates** above); `sudo vpnchecker update` or the same command updates at once. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
 
 ### From source
 
@@ -144,7 +144,8 @@ protect:                        # Claude / Cursor / Rider, always active
   resume_checks: 4
 
 update:
-  auto: true                    # install newer releases automatically
+  auto: true                    # look for newer releases
+  confirm: true                 # ask before installing one
   interval: 24h
 ```
 
@@ -204,7 +205,7 @@ The freeze already stops Claude Code; a hook gives a clear message instead of a 
 - **Apps with their own DNS** (DoH, hardcoded resolvers) bypass `/etc/resolver`: subdomains of allowed domains they look up are not learned and stay blocked in `full` mode.
 - **No protection before the daemon starts after boot**, and none while it is stopped.
 - **`full` mode:** blocks traffic that the VPN routes outside the tunnel (split-tunnel exclusions) and captive portals; DNS (port 53) is allowed to any server, so lookups of other domains go to the local resolver while the VPN is down.
-- **Trust:** the daemon is root and reads a user-owned config and the user-writable GlobalProtect event log. The config holds only patterns, host names, subnets and timings (host names are validated strictly because they become file names), but a user who can edit it can make the daemon freeze arbitrary processes. Log-derived hosts are filtered by `gateway_suffixes`. Auto-update trusts this repository's GitHub releases exactly as the install one-liner does: the checksum guards against a damaged download, not against a compromised release, and whoever can publish a release gets root on every machine that updates. Turn it off with `update.auto: false`; pin a version with `VPNCHECKER_VERSION=vX.Y.Z` on the installer.
+- **Trust:** the daemon is root and reads a user-owned config and the user-writable GlobalProtect event log. The config holds only patterns, host names, subnets and timings (host names are validated strictly because they become file names), but a user who can edit it can make the daemon freeze arbitrary processes. Log-derived hosts are filtered by `gateway_suffixes`. Auto-update trusts this repository's GitHub releases exactly as the install one-liner does: the checksum guards against a damaged download, not against a compromised release, and whoever can publish a release gets root on every machine that accepts it. Asking first, the default, keeps a person in that loop; `update.confirm: false` takes them out. Turn it off with `update.auto: false`; pin a version with `VPNCHECKER_VERSION=vX.Y.Z` on the installer.
 - First start with the VPN down and an empty cache has no kernel block yet (nothing learned); the freeze and DNS shield still apply.
 
 ## Development
@@ -217,7 +218,7 @@ vpnchecker --socket ./vc.sock run --dry-run -v    # needs no root, shows what wo
 
 Tests cover the state machine (`guard`), process selection and real SIGSTOP / SIGCONT on a child process, the DNS responder over real UDP, pf rule rendering, GlobalProtect plist parsing and config validation.
 
-Release: bump `version` in `Cargo.toml`, commit, `git tag vX.Y.Z && git push --tags`. The `release` workflow builds the universal binary and publishes it with `install.sh` to GitHub Releases. Machines with `update.auto` install it within `update.interval`, so a release must keep accepting existing configs: one that rejects a config is skipped on that machine.
+Release: bump `version` in `Cargo.toml`, commit, `git tag vX.Y.Z && git push --tags`. The `release` workflow builds the universal binary and publishes it with `install.sh` to GitHub Releases. Machines with `update.auto` offer it to their user within `update.interval` (or install it at once with `update.confirm: false`), so a release must keep accepting existing configs: one that rejects a config is skipped on that machine.
 
 ## License
 

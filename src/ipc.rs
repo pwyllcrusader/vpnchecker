@@ -43,9 +43,12 @@ pub struct Snapshot {
     /// Version of the running daemon (empty when the daemon predates this field).
     #[serde(default)]
     pub version: String,
-    /// The daemon installs newer releases by itself.
+    /// The daemon looks for newer releases and installs them.
     #[serde(default)]
     pub auto_update: bool,
+    /// It asks the user before installing one.
+    #[serde(default)]
+    pub update_confirm: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

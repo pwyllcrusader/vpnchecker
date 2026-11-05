@@ -284,7 +284,11 @@ async fn status(socket: &Path, json: bool) -> Result<()> {
     println!("config:     {}", snap.config);
     println!("pid:        {}", snap.pid);
     if !snap.version.is_empty() {
-        let auto = if snap.auto_update { "on" } else { "off" };
+        let auto = match (snap.auto_update, snap.update_confirm) {
+            (false, _) => "off",
+            (true, true) => "on (asks before installing)",
+            (true, false) => "on (installs without asking)",
+        };
         println!("version:    {}, auto-update {auto}", snap.version);
     }
     print_checks(&snap.vpn.checks);

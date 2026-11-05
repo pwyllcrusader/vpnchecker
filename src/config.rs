@@ -216,8 +216,11 @@ impl Default for CheckConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct UpdateConfig {
-    /// The installed daemon installs newer GitHub releases by itself and restarts.
+    /// The installed daemon looks for newer GitHub releases, installs them and restarts.
     pub auto: bool,
+    /// Ask the user (the config owner, in their GUI session) before installing. Nothing is downloaded without a
+    /// yes; no answer, or nobody to ask, means no update. `false` installs unattended.
+    pub confirm: bool,
     /// How often it looks for a newer release (only while the VPN is up).
     #[serde(with = "humantime_serde")]
     pub interval: Duration,
@@ -227,6 +230,7 @@ impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
             auto: true,
+            confirm: true,
             interval: Duration::from_secs(24 * 3600),
         }
     }
@@ -552,8 +556,13 @@ mod tests {
         let base = "vpn:\n  subnets: [10.4.0.0/16]\n";
         let cfg = parse(base).unwrap();
         assert!(cfg.update.auto);
+        assert!(cfg.update.confirm, "never installs without asking unless told to");
         assert_eq!(cfg.update.interval, Duration::from_secs(24 * 3600));
-        assert!(parse(TEMPLATE).unwrap().update.auto, "the template spells the default out");
+        let template = parse(TEMPLATE).unwrap();
+        assert!(template.update.auto && template.update.confirm, "the template spells the defaults out");
+
+        let unattended = parse(&format!("{base}update:\n  confirm: false\n")).unwrap();
+        assert!(unattended.update.auto && !unattended.update.confirm);
 
         let off = parse(&format!("{base}update:\n  auto: false\n  interval: 6h\n")).unwrap();
         assert!(!off.update.auto);

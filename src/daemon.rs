@@ -91,6 +91,7 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
         since: sys::now_unix(),
         version: update::CURRENT.to_string(),
         auto_update: self_update && cfg.update.auto,
+        update_confirm: cfg.update.confirm,
         ..Default::default()
     }));
     let (tx, mut rx) = mpsc::channel(8);
@@ -220,6 +221,63 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     Ok(())
 }
 
+/// One update round of the installed daemon: find a newer release, ask the user unless told not to, install
+/// it and request the restart. Nothing is downloaded before the user agreed.
+async fn self_update(
+    confirm: bool,
+    uid: Option<u32>,
+    config: &Path,
+    shared: &Shared,
+    control: &mpsc::Sender<Control>,
+) -> Result<()> {
+    let current = update::current();
+    let latest = update::latest().await?;
+    if latest <= current {
+        debug!(%current, %latest, "no newer release");
+        return Ok(());
+    }
+    if confirm {
+        let skipped = Path::new(update::SKIPPED);
+        if update::skipped(skipped) == Some(latest) {
+            debug!(%latest, "this release was skipped by the user");
+            return Ok(());
+        }
+        let question = format!(
+            "vpnchecker {latest} is available (installed: {current}).\n\nUpdate now? The daemon restarts within \
+             seconds and the protection stays in place meanwhile."
+        );
+        match notify::ask_update(uid, &question).await {
+            Some(notify::Answer::Update) => info!(%latest, "update confirmed by the user"),
+            Some(notify::Answer::Skip) => {
+                update::skip(skipped, latest)?;
+                info!(%latest, "release skipped by the user, not asking about it again");
+                return Ok(());
+            }
+            Some(notify::Answer::Later) => {
+                info!(%latest, "update postponed by the user, asking again after update.interval");
+                return Ok(());
+            }
+            None => {
+                info!(%latest, "a newer release is available but nobody could be asked, not installing it");
+                return Ok(());
+            }
+        }
+        // The answer can take minutes: only go on if the VPN is still up.
+        let up = {
+            let snap = shared.lock().unwrap();
+            snap.vpn.state == VpnState::Up && snap.protection == Protection::Open
+        };
+        if !up {
+            info!(%latest, "the VPN went down while waiting for the answer, update postponed");
+            return Ok(());
+        }
+    }
+    update::install(latest, config, Path::new(launchd::BIN)).await?;
+    info!(from = %current, to = %latest, "new version installed, restarting");
+    let _ = control.send(Control::Updated(latest.to_string())).await;
+    Ok(())
+}
+
 impl Daemon {
     fn ticks(&self) -> (Interval, Interval, Interval) {
         let mut check = interval(self.cfg.check.interval);
@@ -233,9 +291,9 @@ impl Daemon {
         (check, resolve, protect)
     }
 
-    /// Looks for a newer release once `update.interval` has passed, in the background. Only with the VPN
-    /// verified up: the download then leaves through the tunnel, and the restart never happens while the
-    /// apps are blocked.
+    /// Looks for a newer release once `update.interval` has passed, in the background, and asks the user before
+    /// installing it (`update.confirm`). Only with the VPN verified up: the download then leaves through the
+    /// tunnel, and the restart never happens while the apps are blocked.
     fn maybe_update(&mut self) {
         if !self.self_update || !self.cfg.update.auto || Instant::now() < self.next_update {
             return;
@@ -249,14 +307,10 @@ impl Daemon {
         }
         self.next_update = Instant::now() + self.cfg.update.interval;
         let (control, updating, config) = (self.control.clone(), self.updating.clone(), self.config_path.clone());
+        let (confirm, uid, shared) = (self.cfg.update.confirm, self.notify_uid, self.shared.clone());
         tokio::spawn(async move {
-            match update::run(update::current(), &config, Path::new(launchd::BIN)).await {
-                Ok(update::Outcome::Updated { from, to }) => {
-                    info!(%from, %to, "new version installed, restarting");
-                    let _ = control.send(Control::Updated(to.to_string())).await;
-                }
-                Ok(update::Outcome::UpToDate { current, latest }) => debug!(%current, %latest, "no newer release"),
-                Err(e) => warn!("update check failed, next try after update.interval: {e:#}"),
+            if let Err(e) = self_update(confirm, uid, &config, &shared, &control).await {
+                warn!("update check failed, next try after update.interval: {e:#}");
             }
             updating.store(false, Ordering::SeqCst);
         });
@@ -569,6 +623,7 @@ impl Daemon {
         snap.frozen = self.frozen;
         snap.shield = self.shield.active();
         snap.auto_update = self.self_update && self.cfg.update.auto;
+        snap.update_confirm = self.cfg.update.confirm;
     }
 
     async fn reload(&mut self) -> bool {

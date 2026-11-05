@@ -95,10 +95,13 @@ check:
   resolve_retain: 24h
 
 update:
-  # The installed daemon installs newer GitHub releases by itself: it looks for one every `interval` while the VPN
-  # is up, checks the download against the release checksum and against this config, swaps its binary and restarts.
-  # false: update by hand with `sudo vpnchecker update` or the install command.
+  # The installed daemon looks for a newer GitHub release every `interval` while the VPN is up. Installing one means:
+  # download, check against the release checksum and against this config, swap the binary, restart.
+  # false: never look; update by hand with `sudo vpnchecker update` or the install command.
   auto: true
+  # Ask before installing: a dialog with Update / Later / Skip This Version appears in your session and nothing is
+  # downloaded without a yes. No answer, or nobody logged in, means no update. false: install without asking.
+  confirm: true
   interval: 24h
 
 # macOS notification when the protection blocks / resumes the apps

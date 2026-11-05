@@ -124,7 +124,7 @@ EOF
   vpnchecker logs -f               # daemon log
   sudo vpnchecker update           # update now (or run the same install command again)
   sudo vpnchecker uninstall        # remove everything
-New releases install by themselves while the VPN is up; turn that off with update.auto: false in the config.
+When a new release appears, vpnchecker asks before installing it (update.confirm / update.auto in the config).
 EOF
 }
 

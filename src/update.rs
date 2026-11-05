@@ -68,15 +68,35 @@ pub async fn run(current: Version, config: &Path, target: &Path) -> Result<Outco
     if latest <= current {
         return Ok(Outcome::UpToDate { current, latest });
     }
+    install(latest, config, target).await?;
+    Ok(Outcome::Updated { from: current, to: latest })
+}
+
+/// Downloads `version`, verifies it and puts it in place of `target`.
+pub async fn install(version: Version, config: &Path, target: &Path) -> Result<()> {
     let dir = work_dir()?;
     let installed = async {
-        let new = fetch(latest, &dir).await?;
+        let new = fetch(version, &dir).await?;
         accepts_config(&new, config).await?;
         install_binary(&new, target)
     }
     .await;
     let _ = fs::remove_dir_all(&dir);
-    installed.map(|()| Outcome::Updated { from: current, to: latest })
+    installed
+}
+
+/// The release the user chose not to be asked about again.
+pub const SKIPPED: &str = "/var/db/vpnchecker/update-skipped";
+
+pub fn skipped(path: &Path) -> Option<Version> {
+    fs::read_to_string(path).ok().as_deref().and_then(Version::parse)
+}
+
+pub fn skip(path: &Path, version: Version) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(path, format!("{version}\n")).with_context(|| format!("writing {}", path.display()))
 }
 
 /// The newest published release, read from where `releases/latest` redirects: no API, no token, no rate limit.
@@ -273,6 +293,20 @@ mod tests {
         for bad in ["", "abc", &hex[1..], &format!("{}g", &hex[1..]), "not found"] {
             assert_eq!(digest(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn remembers_the_skipped_release() {
+        let dir = tmp("skip");
+        let file = dir.join("state").join("update-skipped");
+        assert_eq!(skipped(&file), None, "nothing skipped yet");
+        skip(&file, Version(0, 1, 3)).unwrap();
+        assert_eq!(skipped(&file), Some(Version(0, 1, 3)));
+        skip(&file, Version(0, 2, 0)).unwrap();
+        assert_eq!(skipped(&file), Some(Version(0, 2, 0)), "a later skip replaces the earlier one");
+        fs::write(&file, "garbage").unwrap();
+        assert_eq!(skipped(&file), None);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
