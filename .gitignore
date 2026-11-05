@@ -1,2 +1,5 @@
 /target
 /.vscode
+# Release artifacts built by .github/workflows/release.yml: untracked, they make `cargo publish` refuse a dirty tree.
+/dist
+/vpnchecker-macos-universal.tar.gz*
