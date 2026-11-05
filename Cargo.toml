@@ -1,6 +1,6 @@
 [package]
 name = "vpnchecker"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.88"
 description = "VPN kill switch for macOS: outbound traffic leaves only through the VPN (pf), with a wildcard domain allowlist"
