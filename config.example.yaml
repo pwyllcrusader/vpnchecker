@@ -74,15 +74,22 @@ allow:
   # gateways from pan_gp_event.log automatically. While the VPN is down the logs are followed, so a gateway the client
   # has just started trying is allowed within seconds.
   globalprotect: true
-  # Host names that only appear in the user-writable event log are trusted when they end in one of these suffixes
-  # (portals and the gateway GlobalProtect reports itself are always trusted).
+  # Domains the VPN's gateways live under. Host names that only appear in the user-writable event log are trusted
+  # when they end in one of these (portals and the gateway GlobalProtect reports itself are always trusted). In
+  # `full` mode every lookup under them also goes through the local DNS forwarder, so the address the VPN client
+  # receives is allowed before it connects: other gateways and rotating addresses keep working.
   gateway_suffixes: [gpcloudservice.com]
+  # Hosts the VPN client probes before it connects, allowed in `full` mode. GlobalProtect tests for a captive portal
+  # with these three in rotation; two refused probes look like a captive portal to it and it waits instead of
+  # connecting, so keep all three.
+  probe_hosts: [captive.apple.com, clients3.google.com, www.msftconnecttest.com]
   # Hosts reachable without the VPN, each with all its subdomains ('*.' prefix optional, quote it).
   # Add from the CLI: `vpnchecker allow example.com`. Subdomain addresses are learned by a local
   # DNS forwarder (/etc/resolver/<domain>), also VPN portal / gateway hosts the client must reach.
   # A domain cannot be listed here and under protect.domains at the same time.
   domains: []
   #  - vpn.example.corp
+  #  - jumpcloud.com      # identity provider of a SAML / SSO VPN login: its page must load without the VPN
   cidrs: []
   #  - 203.0.113.5/32
 

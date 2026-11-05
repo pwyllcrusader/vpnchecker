@@ -92,7 +92,7 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     let proxy = match Proxy::start(resolver.clone(), dry_run).await {
         Ok(proxy) => Some(proxy),
         Err(e) => {
-            warn!("dns forwarder disabled, subdomains of allow.domains are not learned: {e:#}");
+            warn!("dns forwarder disabled, subdomains of allow.domains and VPN gateways are not learned: {e:#}");
             None
         }
     };
@@ -247,12 +247,12 @@ impl Daemon {
         snap.protected_ips = protected.len();
     }
 
-    /// Routes allow.domains (with subdomains) through the DNS forwarder.
+    /// Routes allow.domains (with subdomains) and, in full mode, the VPN client's own names through the DNS forwarder.
     fn sync_zones(&self) {
         let Some(proxy) = &self.proxy else {
             return;
         };
-        let zones = &self.cfg.allow.domains;
+        let zones = &self.cfg.forward_zones();
         proxy.set_zones(zones);
         if self.dry_run {
             info!(?zones, "[dry-run] not writing {}/<zone> files", dnsproxy::RESOLVER_DIR);
