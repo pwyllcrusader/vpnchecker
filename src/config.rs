@@ -173,6 +173,8 @@ pub struct AllowConfig {
     pub gateway_suffixes: Vec<String>,
     /// Hosts the VPN client probes before it connects (GlobalProtect's captive portal test). Allowed in `full`
     /// mode: a refused probe looks like a captive portal to the client, which then waits instead of connecting.
+    /// GlobalProtect rotates through all three defaults and takes two refused probes for a captive portal, so
+    /// allowing only one of them is not enough.
     pub probe_hosts: Vec<String>,
     /// Each entry covers the domain and all of its subdomains.
     pub domains: Vec<String>,
@@ -186,7 +188,9 @@ impl Default for AllowConfig {
             learn_gateways: true,
             globalprotect: true,
             gateway_suffixes: vec!["gpcloudservice.com".to_string()],
-            probe_hosts: vec!["clients3.google.com".to_string()],
+            probe_hosts: ["captive.apple.com", "clients3.google.com", "www.msftconnecttest.com"]
+                .map(str::to_string)
+                .to_vec(),
             domains: Vec::new(),
             cidrs: Vec::new(),
         }
@@ -594,7 +598,11 @@ mod tests {
     fn full_mode_forwards_what_the_vpn_client_needs() {
         let base = "vpn:\n  subnets: [10.4.0.0/16]\n";
         let full = parse(base).unwrap();
-        assert_eq!(full.forward_zones(), ["gpcloudservice.com", "clients3.google.com"]);
+        assert_eq!(
+            full.forward_zones(),
+            ["gpcloudservice.com", "captive.apple.com", "clients3.google.com", "www.msftconnecttest.com"],
+            "every host GlobalProtect probes: two refused probes read as a captive portal"
+        );
         assert!(full.allow_keys().contains(&"gpcloudservice.com".to_string()), "learned addresses reach pf");
 
         let scoped = parse(&format!("{base}mode: scoped\nallow:\n  domains: [example.com]\n")).unwrap();
@@ -604,7 +612,11 @@ mod tests {
         assert!(off.forward_zones().is_empty());
 
         let covered = parse(&format!("{base}allow:\n  domains: [gpcloudservice.com, google.com]\n")).unwrap();
-        assert_eq!(covered.forward_zones(), ["gpcloudservice.com", "google.com"], "covered zones are not repeated");
+        assert_eq!(
+            covered.forward_zones(),
+            ["gpcloudservice.com", "google.com", "captive.apple.com", "www.msftconnecttest.com"],
+            "covered zones are not repeated"
+        );
 
         let custom =
             parse(&format!("{base}allow:\n  gateway_suffixes: [VPN.Corp.Example]\n  probe_hosts: []\n")).unwrap();

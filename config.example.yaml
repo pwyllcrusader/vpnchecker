@@ -80,8 +80,9 @@ allow:
   # receives is allowed before it connects: other gateways and rotating addresses keep working.
   gateway_suffixes: [gpcloudservice.com]
   # Hosts the VPN client probes before it connects, allowed in `full` mode. GlobalProtect tests for a captive portal
-  # with clients3.google.com; a refused probe looks like a captive portal to it and it waits instead of connecting.
-  probe_hosts: [clients3.google.com]
+  # with these three in rotation; two refused probes look like a captive portal to it and it waits instead of
+  # connecting, so keep all three.
+  probe_hosts: [captive.apple.com, clients3.google.com, www.msftconnecttest.com]
   # Hosts reachable without the VPN, each with all its subdomains ('*.' prefix optional, quote it).
   # Add from the CLI: `vpnchecker allow example.com`. Subdomain addresses are learned by a local
   # DNS forwarder (/etc/resolver/<domain>), also VPN portal / gateway hosts the client must reach.
