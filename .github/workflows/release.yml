@@ -83,11 +83,14 @@ jobs:
         run: |
           cargo build --release --locked --target aarch64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
-          mkdir dist
-          lipo -create -output dist/vpnchecker \
+          # Outside the checkout: cargo publish refuses a dirty working tree.
+          dist="$RUNNER_TEMP/dist"
+          mkdir "$dist"
+          lipo -create -output "$dist/vpnchecker" \
             target/aarch64-apple-darwin/release/vpnchecker \
             target/x86_64-apple-darwin/release/vpnchecker
-          tar -C dist -czf vpnchecker-macos-universal.tar.gz vpnchecker
+          cd "$dist"
+          tar -czf vpnchecker-macos-universal.tar.gz vpnchecker
           shasum -a 256 vpnchecker-macos-universal.tar.gz > vpnchecker-macos-universal.tar.gz.sha256
 
       - name: Commit and tag
@@ -106,8 +109,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "v$VERSION" --verify-tag --title "v$VERSION" --generate-notes \
-            vpnchecker-macos-universal.tar.gz \
-            vpnchecker-macos-universal.tar.gz.sha256 \
+            "$RUNNER_TEMP/dist/vpnchecker-macos-universal.tar.gz" \
+            "$RUNNER_TEMP/dist/vpnchecker-macos-universal.tar.gz.sha256" \
             install.sh
 
       - name: Publish to crates.io
