@@ -219,7 +219,7 @@ vpnchecker --socket ./vc.sock run --dry-run -v    # root не нужен, пок
 
 Тесты покрывают конечный автомат (`guard`), выбор процессов и реальные SIGSTOP / SIGCONT на дочернем процессе, DNS-ответчик по настоящему UDP, генерацию правил pf, разбор plist GlobalProtect и проверку конфига.
 
-Релиз: поднять `version` в `Cargo.toml`, закоммитить, `git tag vX.Y.Z && git push --tags`. Workflow `release` соберёт универсальный бинарник и выложит его вместе с `install.sh` в GitHub Releases. Машины с `update.auto` предложат его пользователю в пределах `update.interval` (или сразу поставят при `update.confirm: false`), поэтому релиз должен принимать существующие конфиги: релиз, отвергающий конфиг, на такой машине пропускается.
+Релиз автоматический. Каждый мерж в `master`, меняющий `src/`, `Cargo.*` или `install.sh`, запускает workflow `release`: он поднимает patch-версию (или берёт `version`, поднятую в PR; *Run workflow* предлагает minor / major), коммитит и ставит тег, собирает универсальный бинарник, выкладывает его вместе с `install.sh` в GitHub Releases, а крейт — на crates.io (секрет `CARGO_REGISTRY_TOKEN`). Машины с `update.auto` предложат его пользователю в пределах `update.interval` (или сразу поставят при `update.confirm: false`), поэтому релиз должен принимать существующие конфиги: релиз, отвергающий конфиг, на такой машине пропускается.
 
 ## Лицензия
 

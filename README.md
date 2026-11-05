@@ -219,7 +219,7 @@ vpnchecker --socket ./vc.sock run --dry-run -v    # needs no root, shows what wo
 
 Tests cover the state machine (`guard`), process selection and real SIGSTOP / SIGCONT on a child process, the DNS responder over real UDP, pf rule rendering, GlobalProtect plist parsing and config validation.
 
-Release: bump `version` in `Cargo.toml`, commit, `git tag vX.Y.Z && git push --tags`. The `release` workflow builds the universal binary and publishes it with `install.sh` to GitHub Releases. Machines with `update.auto` offer it to their user within `update.interval` (or install it at once with `update.confirm: false`), so a release must keep accepting existing configs: one that rejects a config is skipped on that machine.
+Release: automatic. Every merge to `master` that touches `src/`, `Cargo.*` or `install.sh` runs the `release` workflow: it bumps the patch version (or takes a `version` raised in the PR; *Run workflow* offers minor / major), commits and tags it, builds the universal binary, publishes it with `install.sh` to GitHub Releases and the crate to crates.io (secret `CARGO_REGISTRY_TOKEN`). Machines with `update.auto` offer it to their user within `update.interval` (or install it at once with `update.confirm: false`), so a release must keep accepting existing configs: one that rejects a config is skipped on that machine.
 
 ## License
 
