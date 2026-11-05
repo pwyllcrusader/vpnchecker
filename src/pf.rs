@@ -33,7 +33,12 @@ pub fn render(via: Option<&Via>, allow: &BTreeSet<IpNet>) -> String {
     }
     // Declared even when empty: the DNS forwarder adds addresses to it between reloads.
     rules += &table(ALLOW_TABLE, allow);
-    rules += "pass out quick on lo0 all\n";
+    // Stateless on purpose. A plain `pass` is loaded as `flags S/SA keep state`, which matches only the first
+    // packet of a TCP connection. On loopback the reply leaves "out" as well: it is not the reverse of that
+    // state and it is not a SYN, so it would fall through to the final block and every local TCP connection
+    // would be reset (the GlobalProtect window talking to its service on 127.0.0.1:4767, IDE back ends,
+    // Docker, dev servers). `set skip on lo0` would do the same but is not allowed inside an anchor.
+    rules += "pass out quick on lo0 all flags any no state\n";
     match via {
         // if-bound: a floating state would keep passing tunnel connections that fall back to en0.
         Some(Via::Interface(iface)) if valid_interface_name(iface) => {
@@ -205,6 +210,21 @@ mod tests {
             assert!(rules.contains(needle), "missing {needle}");
         }
         assert!(rules.ends_with("block return out quick all\n"));
+    }
+
+    /// A stateful pass on lo0 lets the SYN out and then blocks the reply, which also travels "out" there.
+    #[test]
+    fn loopback_passes_every_packet_not_just_the_first() {
+        let vpn: BTreeSet<IpNet> = ["10.4.0.0/16".parse().unwrap()].into();
+        for via in [None, Some(Via::Interface("utun4".into())), Some(Via::Subnets(vpn))] {
+            let rules = render(via.as_ref(), &allow());
+            let lines: Vec<&str> = rules.lines().collect();
+            let loopback: Vec<&&str> = lines.iter().filter(|l| l.contains(" on lo0 ")).collect();
+            assert_eq!(loopback, [&"pass out quick on lo0 all flags any no state"], "{via:?}");
+            let pass = lines.iter().position(|l| l.contains(" on lo0 ")).unwrap();
+            let block = lines.iter().position(|l| *l == "block return out quick all").unwrap();
+            assert!(pass < block, "loopback must be passed before the final block: {via:?}");
+        }
     }
 
     #[test]

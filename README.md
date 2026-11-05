@@ -38,7 +38,7 @@ Every address is kept for `resolve_retain` and persisted in `/var/db/vpnchecker/
 **`full` mode rules** (anchor `com.apple/vpnchecker`; the stock `/etc/pf.conf` already evaluates `com.apple/*`, so system config is not modified):
 
 ```
-pass out quick on lo0 all
+pass out quick on lo0 all flags any no state                # localhost, stateless on purpose
 pass out quick on utun4 all keep state (if-bound)           # the tunnel
 pass out quick proto { tcp udp } to any port 53 keep state  # DNS (system resolver)
 pass out quick proto udp to any port { 67 68 123 546 547 } keep state
@@ -46,6 +46,8 @@ pass out quick inet6 proto icmp6 all keep state
 pass out quick to <vpnchecker_allow> keep state             # VPN portal/gateways, LAN
 block return out quick all
 ```
+
+The loopback rule carries no state because on `lo0` a reply leaves "out" too. A stateful rule there matches only the first packet of a TCP connection, and the reply would be reset by the final block: that is every local TCP connection, including the GlobalProtect window talking to its own service on `127.0.0.1:4767`.
 
 **`scoped` mode rules:**
 

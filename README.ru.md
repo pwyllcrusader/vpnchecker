@@ -38,7 +38,7 @@ VPN kill switch для macOS, сделан под GlobalProtect (работае�
 **Правила режима `full`** (якорь `com.apple/vpnchecker`; стандартный `/etc/pf.conf` уже подключает `com.apple/*`, системный конфиг не меняется):
 
 ```
-pass out quick on lo0 all
+pass out quick on lo0 all flags any no state                # localhost, намеренно без состояния
 pass out quick on utun4 all keep state (if-bound)           # туннель
 pass out quick proto { tcp udp } to any port 53 keep state  # DNS (системный резолвер)
 pass out quick proto udp to any port { 67 68 123 546 547 } keep state
@@ -46,6 +46,8 @@ pass out quick inet6 proto icmp6 all keep state
 pass out quick to <vpnchecker_allow> keep state             # портал/шлюзы VPN, LAN
 block return out quick all
 ```
+
+Правило для loopback не хранит состояние, потому что на `lo0` ответ тоже уходит «наружу». Правило с состоянием совпадает там только с первым пакетом TCP-соединения, а ответ сбрасывался бы финальной блокировкой: это любое локальное TCP-соединение, включая окно GlobalProtect, которое общается со своим сервисом на `127.0.0.1:4767`.
 
 **Правила режима `scoped`:**
 
