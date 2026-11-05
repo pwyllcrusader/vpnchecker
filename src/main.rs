@@ -279,6 +279,15 @@ async fn diagnose(config_path: &Path) -> Result<()> {
         }
     }
 
+    let client_zones: Vec<String> =
+        cfg.forward_zones().into_iter().filter(|z| !cfg.allow.domains.contains(z)).collect();
+    if !client_zones.is_empty() {
+        println!("\nVPN client zones (full mode: every address a lookup under them returns is allowed):");
+        for zone in &client_zones {
+            println!("  {zone} [{}]", dnsproxy::resolver_file_state(zone));
+        }
+    }
+
     if cfg.allow.globalprotect {
         let home = sys::file_owner(config_path)
             .and_then(|uid| nix::unistd::User::from_uid(uid).ok().flatten())

@@ -167,8 +167,13 @@ pub struct AllowConfig {
     /// Allow portal / gateway hosts found in GlobalProtect settings and its event log.
     pub globalprotect: bool,
     /// Host names found in the (user-writable) GlobalProtect event log are only trusted when they end in one of
-    /// these suffixes, equal a portal, or equal the gateway GlobalProtect reports itself.
+    /// these suffixes, equal a portal, or equal the gateway GlobalProtect reports itself. In `full` mode every
+    /// lookup under them goes through the DNS forwarder, so gateways never used before and rotating addresses
+    /// are allowed the moment the client resolves them.
     pub gateway_suffixes: Vec<String>,
+    /// Hosts the VPN client probes before it connects (GlobalProtect's captive portal test). Allowed in `full`
+    /// mode: a refused probe looks like a captive portal to the client, which then waits instead of connecting.
+    pub probe_hosts: Vec<String>,
     /// Each entry covers the domain and all of its subdomains.
     pub domains: Vec<String>,
     pub cidrs: Vec<IpNet>,
@@ -181,6 +186,7 @@ impl Default for AllowConfig {
             learn_gateways: true,
             globalprotect: true,
             gateway_suffixes: vec!["gpcloudservice.com".to_string()],
+            probe_hosts: vec!["clients3.google.com".to_string()],
             domains: Vec::new(),
             cidrs: Vec::new(),
         }
@@ -235,6 +241,12 @@ pub fn parse(text: &str) -> Result<Config> {
         }
     }
     cfg.allow.domains = domains;
+    // They become forwarder zones, which are matched against lower-case query names.
+    for list in [&mut cfg.allow.gateway_suffixes, &mut cfg.allow.probe_hosts] {
+        for name in list.iter_mut() {
+            *name = name.to_ascii_lowercase();
+        }
+    }
     cfg.validate()?;
     Ok(cfg)
 }
@@ -362,6 +374,9 @@ impl Config {
         for suffix in &self.allow.gateway_suffixes {
             validate_hostname(suffix).context("allow.gateway_suffixes")?;
         }
+        for host in &self.allow.probe_hosts {
+            validate_hostname(host).context("allow.probe_hosts")?;
+        }
         let p = &self.protect;
         for domain in &p.domains {
             validate_hostname(domain).context("protect.domains")?;
@@ -370,14 +385,16 @@ impl Config {
             validate_hostname(host).context("protect.hosts")?;
         }
         // Both write /etc/resolver/<domain>: a name cannot be shielded and allowed at the same time.
+        let a = &self.allow;
+        let allowed: Vec<String> = a.domains.iter().chain(&a.gateway_suffixes).chain(&a.probe_hosts).cloned().collect();
         for domain in &p.domains {
-            if let Some(zone) = covering_zone(&self.allow.domains, domain) {
-                bail!("protect.domains: {domain} is covered by allow.domains entry {zone}");
+            if let Some(zone) = covering_zone(&allowed, domain) {
+                bail!("protect.domains: {domain} is covered by the allow entry {zone}");
             }
         }
-        for zone in &self.allow.domains {
+        for zone in &allowed {
             if let Some(domain) = covering_zone(&p.domains, zone) {
-                bail!("allow.domains: {zone} is covered by protect.domains entry {domain}");
+                bail!("allow: {zone} is covered by protect.domains entry {domain}");
             }
         }
         for pattern in p.patterns() {
@@ -420,9 +437,24 @@ impl Config {
         self.vpn.subnets.iter().map(IpNet::trunc).collect()
     }
 
-    /// Resolver keys (domains plus learned sets) whose addresses are allowed.
+    /// Zones answered by the DNS forwarder: every address a lookup under them returns is allowed before the
+    /// client gets the answer. `allow.domains` always; in `full` mode also what the VPN client itself needs to
+    /// reconnect, because there a blocked gateway or probe means the VPN never comes back.
+    pub fn forward_zones(&self) -> Vec<String> {
+        let mut zones = self.allow.domains.clone();
+        if self.mode == Mode::Full && self.allow.globalprotect {
+            for zone in self.allow.gateway_suffixes.iter().chain(&self.allow.probe_hosts) {
+                if covering_zone(&zones, zone).is_none() {
+                    zones.push(zone.clone());
+                }
+            }
+        }
+        zones
+    }
+
+    /// Resolver keys (forwarder zones plus learned sets) whose addresses are allowed.
     pub fn allow_keys(&self) -> Vec<String> {
-        let mut keys = self.allow.domains.clone();
+        let mut keys = self.forward_zones();
         if self.allow.learn_gateways {
             keys.push(LEARNED_GATEWAYS.to_string());
         }
@@ -556,6 +588,31 @@ mod tests {
         assert!(parse(&format!("{base}allow:\n  domains: [api.anthropic.com]\n")).is_err(), "under a shielded zone");
         assert!(parse(&format!("{base}allow:\n  domains: [ai]\n")).is_err(), "parent of a shielded zone");
         assert!(parse(&format!("{base}allow:\n  domains: [example.com]\n")).is_ok());
+    }
+
+    #[test]
+    fn full_mode_forwards_what_the_vpn_client_needs() {
+        let base = "vpn:\n  subnets: [10.4.0.0/16]\n";
+        let full = parse(base).unwrap();
+        assert_eq!(full.forward_zones(), ["gpcloudservice.com", "clients3.google.com"]);
+        assert!(full.allow_keys().contains(&"gpcloudservice.com".to_string()), "learned addresses reach pf");
+
+        let scoped = parse(&format!("{base}mode: scoped\nallow:\n  domains: [example.com]\n")).unwrap();
+        assert_eq!(scoped.forward_zones(), ["example.com"], "scoped mode never blocks the VPN client");
+
+        let off = parse(&format!("{base}allow:\n  globalprotect: false\n")).unwrap();
+        assert!(off.forward_zones().is_empty());
+
+        let covered = parse(&format!("{base}allow:\n  domains: [gpcloudservice.com, google.com]\n")).unwrap();
+        assert_eq!(covered.forward_zones(), ["gpcloudservice.com", "google.com"], "covered zones are not repeated");
+
+        let custom =
+            parse(&format!("{base}allow:\n  gateway_suffixes: [VPN.Corp.Example]\n  probe_hosts: []\n")).unwrap();
+        assert_eq!(custom.forward_zones(), ["vpn.corp.example"]);
+
+        assert!(parse(&format!("{base}allow:\n  probe_hosts: [claude.ai]\n")).is_err(), "shielded and allowed");
+        assert!(parse(&format!("{base}allow:\n  gateway_suffixes: [anthropic.com]\n")).is_err());
+        assert!(parse(&format!("{base}allow:\n  probe_hosts: ['a..b']\n")).is_err());
     }
 
     #[test]
