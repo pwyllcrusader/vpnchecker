@@ -48,6 +48,8 @@ pub struct Config {
     pub allow: AllowConfig,
     #[serde(default)]
     pub check: CheckConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
     #[serde(default = "yes")]
     pub notify: bool,
 }
@@ -221,6 +223,29 @@ impl Default for CheckConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// The installed daemon looks for newer GitHub releases, installs them and restarts.
+    pub auto: bool,
+    /// Ask the user (the config owner, in their GUI session) before installing. Nothing is downloaded without a
+    /// yes; no answer, or nobody to ask, means no update. `false` installs unattended.
+    pub confirm: bool,
+    /// How often it looks for a newer release (only while the VPN is up).
+    #[serde(with = "humantime_serde")]
+    pub interval: Duration,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto: true,
+            confirm: true,
+            interval: Duration::from_secs(24 * 3600),
+        }
+    }
+}
+
 fn yes() -> bool {
     true
 }
@@ -374,6 +399,9 @@ impl Config {
         }
         if self.check.resolve_interval < Duration::from_secs(5) {
             bail!("check.resolve_interval must be at least 5s");
+        }
+        if self.update.interval < Duration::from_secs(3600) {
+            bail!("update.interval must be at least 1h");
         }
         for suffix in &self.allow.gateway_suffixes {
             validate_hostname(suffix).context("allow.gateway_suffixes")?;
@@ -557,6 +585,27 @@ mod tests {
         assert_eq!(cfg.mode, Mode::Full);
         assert_eq!(cfg.protect.action, Action::Kill);
         assert_eq!(cfg.protect.patterns().last().unwrap(), "/Foo\\.app/");
+    }
+
+    #[test]
+    fn auto_update_defaults_and_limits() {
+        let base = "vpn:\n  subnets: [10.4.0.0/16]\n";
+        let cfg = parse(base).unwrap();
+        assert!(cfg.update.auto);
+        assert!(cfg.update.confirm, "never installs without asking unless told to");
+        assert_eq!(cfg.update.interval, Duration::from_secs(24 * 3600));
+        let template = parse(TEMPLATE).unwrap();
+        assert!(template.update.auto && template.update.confirm, "the template spells the defaults out");
+
+        let unattended = parse(&format!("{base}update:\n  confirm: false\n")).unwrap();
+        assert!(unattended.update.auto && !unattended.update.confirm);
+
+        let off = parse(&format!("{base}update:\n  auto: false\n  interval: 6h\n")).unwrap();
+        assert!(!off.update.auto);
+        assert_eq!(off.update.interval, Duration::from_secs(6 * 3600));
+
+        assert!(parse(&format!("{base}update:\n  interval: 5m\n")).is_err(), "no polling GitHub every few minutes");
+        assert!(parse(&format!("{base}update:\n  channel: beta\n")).is_err(), "unknown field");
     }
 
     #[test]

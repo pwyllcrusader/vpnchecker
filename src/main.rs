@@ -13,6 +13,7 @@ mod procs;
 mod resolver;
 mod routewatch;
 mod sys;
+mod update;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -85,6 +86,12 @@ enum Command {
     },
     /// Restart the daemon (root)
     Restart,
+    /// Install the latest release now and restart the daemon (root)
+    Update {
+        /// Only report whether a newer release exists (no root needed)
+        #[arg(long)]
+        check: bool,
+    },
     /// Remove vpnchecker pf rules immediately (root)
     Flush,
     /// Show daemon log
@@ -157,6 +164,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Start => launchd::start()?,
         Command::Stop { keep_block } => launchd::stop(&config_path, keep_block).await?,
         Command::Restart => launchd::restart()?,
+        Command::Update { check } => update_command(&config_path, check).await?,
         Command::Flush => {
             sys::require_root()?;
             pf::flush()?;
@@ -166,6 +174,35 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Config(cmd) => config_command(cmd, &config_path)?,
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn update_command(config_path: &Path, check: bool) -> Result<()> {
+    let target = Path::new(launchd::BIN);
+    // What counts is the installed daemon, not the binary this command happens to run from.
+    let installed = if target.exists() { Some(update::binary_version(target).await?) } else { None };
+    if check {
+        let current = installed.unwrap_or_else(update::current);
+        let latest = update::latest().await?;
+        if latest > current {
+            println!("update available: {current} -> {latest} (install it with: sudo vpnchecker update)");
+        } else {
+            println!("up to date: {current} (latest release {latest})");
+        }
+        return Ok(());
+    }
+    sys::require_root()?;
+    let Some(current) = installed else {
+        bail!("the daemon is not installed: run the installer or `sudo vpnchecker install` first");
+    };
+    match update::run(current, config_path, target).await? {
+        update::Outcome::UpToDate { current, latest } => println!("up to date: {current} (latest release {latest})"),
+        update::Outcome::Updated { from, to } => {
+            println!("updated {from} -> {to}");
+            launchd::restart()?;
+            println!("daemon restarted");
+        }
+    }
+    Ok(())
 }
 
 async fn allow(config_path: &Path, socket: &Path, mask: &str) -> Result<()> {
@@ -246,6 +283,14 @@ async fn status(socket: &Path, json: bool) -> Result<()> {
     println!("last check: {} ago", ago(snap.last_check));
     println!("config:     {}", snap.config);
     println!("pid:        {}", snap.pid);
+    if !snap.version.is_empty() {
+        let auto = match (snap.auto_update, snap.update_confirm) {
+            (false, _) => "off",
+            (true, true) => "on (asks before installing)",
+            (true, false) => "on (installs without asking)",
+        };
+        println!("version:    {}, auto-update {auto}", snap.version);
+    }
     print_checks(&snap.vpn.checks);
     Ok(())
 }

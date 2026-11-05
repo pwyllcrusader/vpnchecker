@@ -40,6 +40,15 @@ pub struct Snapshot {
     /// Local DNS shield for the protected domains is active.
     #[serde(default)]
     pub shield: bool,
+    /// Version of the running daemon (empty when the daemon predates this field).
+    #[serde(default)]
+    pub version: String,
+    /// The daemon looks for newer releases and installs them.
+    #[serde(default)]
+    pub auto_update: bool,
+    /// It asks the user before installing one.
+    #[serde(default)]
+    pub update_confirm: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -63,6 +72,8 @@ pub struct Response {
 pub enum Control {
     Reload,
     Recheck,
+    /// The daemon replaced its own binary with this version and has to exit so launchd starts it.
+    Updated(String),
 }
 
 pub type Shared = Arc<Mutex<Snapshot>>;

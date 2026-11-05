@@ -14,7 +14,7 @@ pub const LOG: &str = "/var/log/vpnchecker.log";
 const PLIST: &str = "/Library/LaunchDaemons/com.vpnchecker.daemon.plist";
 // Root-owned location so a non-root user cannot swap the binary launchd runs as root.
 const BIN_DIR: &str = "/Library/PrivilegedHelperTools";
-const BIN: &str = "/Library/PrivilegedHelperTools/vpnchecker";
+pub const BIN: &str = "/Library/PrivilegedHelperTools/vpnchecker";
 // CLI symlink created by install.sh.
 const LINK: &str = "/usr/local/bin/vpnchecker";
 

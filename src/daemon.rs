@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Result, bail};
 use ipnet::IpNet;
@@ -23,10 +24,15 @@ use crate::ipc::{self, Control, Shared, Snapshot};
 use crate::pf::{self, Pf, Via};
 use crate::procs::{self, Matcher};
 use crate::resolver::{self, Resolver};
-use crate::{globalprotect, notify, routewatch, sys};
+use crate::{globalprotect, launchd, notify, routewatch, sys, update};
 
 // Survives restarts so exit rules and reconnects know addresses seen on and off the VPN.
 const CACHE: &str = "/var/db/vpnchecker/cache.json";
+// The first update check waits until the daemon has settled; afterwards `update.interval` applies. The poll only
+// compares two instants, so it is frequent: it decides how punctual the first check is and how soon a check that
+// was due while the VPN was down is caught up.
+const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(5 * 60);
+const UPDATE_POLL: Duration = Duration::from_secs(60);
 
 struct Daemon {
     config_path: PathBuf,
@@ -54,6 +60,11 @@ struct Daemon {
     last_tick: SystemTime,
     /// True between a block and the following resume, so "resumed" is only announced after a real block.
     announce_resume: bool,
+    /// This process is the installed daemon and may replace its own binary.
+    self_update: bool,
+    next_update: Instant,
+    updating: Arc<AtomicBool>,
+    control: mpsc::Sender<Control>,
 }
 
 pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<()> {
@@ -72,15 +83,20 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     let mut pf = Pf::new(dry_run);
     pf.enable()?;
 
+    // Only the installed daemon replaces itself: a foreground `run` from a build directory never does.
+    let self_update = !dry_run && std::env::current_exe().is_ok_and(|exe| exe == Path::new(launchd::BIN));
     let shared: Shared = Arc::new(Mutex::new(Snapshot {
         pid: std::process::id(),
         config: config_path.display().to_string(),
         dry_run,
         since: sys::now_unix(),
+        version: update::CURRENT.to_string(),
+        auto_update: self_update && cfg.update.auto,
+        update_confirm: cfg.update.confirm,
         ..Default::default()
     }));
     let (tx, mut rx) = mpsc::channel(8);
-    if let Err(e) = ipc::serve(socket, shared.clone(), tx, notify_uid) {
+    if let Err(e) = ipc::serve(socket, shared.clone(), tx.clone(), notify_uid) {
         warn!("ipc disabled: {e:#}");
     }
 
@@ -132,8 +148,15 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
         block_ticks: 0,
         last_tick: SystemTime::now(),
         announce_resume: false,
+        self_update,
+        next_update: Instant::now() + FIRST_UPDATE_CHECK,
+        updating: Arc::new(AtomicBool::new(false)),
+        control: tx,
     };
-    info!(mode = ?d.cfg.mode, action = ?d.cfg.protect.action, "vpnchecker started");
+    info!(version = update::CURRENT, mode = ?d.cfg.mode, action = ?d.cfg.protect.action, "vpnchecker started");
+    if d.cfg.update.auto && !self_update && !dry_run {
+        info!("auto-update is inactive: this process does not run from {}", launchd::BIN);
+    }
 
     // Close everything right away with cached addresses, before DNS and detection.
     d.apply();
@@ -151,6 +174,8 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
         Err(e) => warn!("route events disabled, polling only: {e:#}"),
     }
     let (mut check_tick, mut resolve_tick, mut protect_tick) = d.ticks();
+    let mut update_tick = interval(UPDATE_POLL);
+    update_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         let mut reconfigured = false;
@@ -166,9 +191,15 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
                 d.resolve().await;
                 d.apply();
             }
+            _ = update_tick.tick() => d.maybe_update(),
             Some(control) = rx.recv() => match control {
                 Control::Reload => reconfigured = d.reload().await,
                 Control::Recheck => d.check().await,
+                Control::Updated(version) => {
+                    // Leave like on SIGTERM: the exit rules stay, launchd starts the new binary.
+                    d.notify(&format!("vpnchecker updated to {version}"));
+                    break;
+                }
             },
             _ = sighup.recv() => reconfigured = d.reload().await,
             _ = sigterm.recv() => break,
@@ -191,6 +222,63 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     Ok(())
 }
 
+/// One update round of the installed daemon: find a newer release, ask the user unless told not to, install
+/// it and request the restart. Nothing is downloaded before the user agreed.
+async fn self_update(
+    confirm: bool,
+    uid: Option<u32>,
+    config: &Path,
+    shared: &Shared,
+    control: &mpsc::Sender<Control>,
+) -> Result<()> {
+    let current = update::current();
+    let latest = update::latest().await?;
+    if latest <= current {
+        debug!(%current, %latest, "no newer release");
+        return Ok(());
+    }
+    if confirm {
+        let skipped = Path::new(update::SKIPPED);
+        if update::skipped(skipped) == Some(latest) {
+            debug!(%latest, "this release was skipped by the user");
+            return Ok(());
+        }
+        let question = format!(
+            "vpnchecker {latest} is available (installed: {current}).\n\nUpdate now? The daemon restarts within \
+             seconds and the protection stays in place meanwhile."
+        );
+        match notify::ask_update(uid, &question).await {
+            Some(notify::Answer::Update) => info!(%latest, "update confirmed by the user"),
+            Some(notify::Answer::Skip) => {
+                update::skip(skipped, latest)?;
+                info!(%latest, "release skipped by the user, not asking about it again");
+                return Ok(());
+            }
+            Some(notify::Answer::Later) => {
+                info!(%latest, "update postponed by the user, asking again after update.interval");
+                return Ok(());
+            }
+            None => {
+                info!(%latest, "a newer release is available but nobody could be asked, not installing it");
+                return Ok(());
+            }
+        }
+        // The answer can take minutes: only go on if the VPN is still up.
+        let up = {
+            let snap = shared.lock().unwrap();
+            snap.vpn.state == VpnState::Up && snap.protection == Protection::Open
+        };
+        if !up {
+            info!(%latest, "the VPN went down while waiting for the answer, update postponed");
+            return Ok(());
+        }
+    }
+    update::install(latest, config, Path::new(launchd::BIN)).await?;
+    info!(from = %current, to = %latest, "new version installed, restarting");
+    let _ = control.send(Control::Updated(latest.to_string())).await;
+    Ok(())
+}
+
 impl Daemon {
     fn ticks(&self) -> (Interval, Interval, Interval) {
         let mut check = interval(self.cfg.check.interval);
@@ -202,6 +290,31 @@ impl Daemon {
         let mut protect = interval(self.cfg.protect.interval);
         protect.set_missed_tick_behavior(MissedTickBehavior::Delay);
         (check, resolve, protect)
+    }
+
+    /// Looks for a newer release once `update.interval` has passed, in the background, and asks the user before
+    /// installing it (`update.confirm`). Only with the VPN verified up: the download then leaves through the
+    /// tunnel, and the restart never happens while the apps are blocked.
+    fn maybe_update(&mut self) {
+        if !self.self_update || !self.cfg.update.auto || Instant::now() < self.next_update {
+            return;
+        }
+        if self.vpn.state != VpnState::Up || self.guard.state() != Protection::Open {
+            debug!("update check postponed: the VPN is not up");
+            return;
+        }
+        if self.updating.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.next_update = Instant::now() + self.cfg.update.interval;
+        let (control, updating, config) = (self.control.clone(), self.updating.clone(), self.config_path.clone());
+        let (confirm, uid, shared) = (self.cfg.update.confirm, self.notify_uid, self.shared.clone());
+        tokio::spawn(async move {
+            if let Err(e) = self_update(confirm, uid, &config, &shared, &control).await {
+                warn!("update check failed, next try after update.interval: {e:#}");
+            }
+            updating.store(false, Ordering::SeqCst);
+        });
     }
 
     fn allowed(&self) -> BTreeSet<IpNet> {
@@ -510,6 +623,8 @@ impl Daemon {
         snap.protection = self.guard.state();
         snap.frozen = self.frozen;
         snap.shield = self.shield.active();
+        snap.auto_update = self.self_update && self.cfg.update.auto;
+        snap.update_confirm = self.cfg.update.confirm;
     }
 
     async fn reload(&mut self) -> bool {
