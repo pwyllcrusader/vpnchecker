@@ -122,8 +122,9 @@ EOF
   vpnchecker allow telegram.org    # allow a domain and its subdomains without the VPN
   vpnchecker status                # state
   vpnchecker logs -f               # daemon log
+  sudo vpnchecker update           # update now (or run the same install command again)
   sudo vpnchecker uninstall        # remove everything
-Update: run the same install command again.
+New releases install by themselves while the VPN is up; turn that off with update.auto: false in the config.
 EOF
 }
 
