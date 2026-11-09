@@ -38,7 +38,7 @@ pub struct VpnStatus {
 }
 
 /// VPN is up when an interface from the VPN pool exists AND the default route goes through it
-/// (GlobalProtect keeps utunN with a pool IP after disconnect).
+/// (GlobalProtect keeps utunN with a pool IP after disconnect). Nothing else decides the state.
 pub async fn detect(cfg: &Config) -> VpnStatus {
     let iface = match find_interface(&cfg.vpn) {
         Ok(found) => found,
@@ -69,28 +69,29 @@ pub async fn detect(cfg: &Config) -> VpnStatus {
         format!("via {}", route.as_deref().unwrap_or("?")),
     );
 
+    let tunnel_up = iface_check.ok && route_ok;
     let gp = cfg.vpn.check_globalprotect.then(globalprotect::connection).flatten();
-    let gp_check = gp.as_ref().map(|c| {
-        result(
-            "globalprotect",
-            !c.disconnected(),
-            format!(
-                "{}{}",
-                c.status,
-                c.gateway_host.as_deref().map(|h| format!(", gateway {h}")).unwrap_or_default()
-            ),
-        )
-    });
-    let gp_ok = gp_check.as_ref().is_none_or(|c| c.ok);
+    let gp_check = gp.as_ref().map(|c| globalprotect_check(c, tunnel_up));
 
-    let mut checks = vec![iface_check.clone(), route_check];
+    let mut checks = vec![iface_check, route_check];
     checks.extend(gp_check);
     VpnStatus {
-        state: if iface_check.ok && route_ok && gp_ok { VpnState::Up } else { VpnState::Down },
+        state: if tunnel_up { VpnState::Up } else { VpnState::Down },
         interface: name,
         checks,
         globalprotect: gp,
     }
+}
+
+/// GlobalProtect's own report is a cross-check, never the verdict. The client writes it apart from the tunnel
+/// itself: it lags the kernel on connect, and on some machines it stays "disconnected" while connected. Traffic
+/// follows the routing table, so a pool address plus the default route on the tunnel outweigh a contradicting
+/// report; the report can only confirm a tunnel that is down anyway.
+fn globalprotect_check(conn: &Connection, tunnel_up: bool) -> CheckResult {
+    let gateway = conn.gateway_host.as_deref().map(|h| format!(", gateway {h}")).unwrap_or_default();
+    let stale = conn.disconnected() && tunnel_up;
+    let note = if stale { " (ignored: the tunnel interface and the default route are up)" } else { "" };
+    result("globalprotect", !conn.disconnected() || stale, format!("{}{gateway}{note}", conn.status))
 }
 
 pub fn find_interface(vpn: &VpnConfig) -> Result<Option<(String, IpAddr)>> {
@@ -164,6 +165,24 @@ mod tests {
             parse_gateway_routes(netstat, &re),
             vec![("74.221.136.175".parse().unwrap(), "en0".to_string())]
         );
+    }
+
+    #[test]
+    fn globalprotect_report_never_overrides_a_tunnel_that_is_up() {
+        let conn = |status: &str| Connection {
+            status: status.into(),
+            ..Connection::default()
+        };
+        // Stale report (stays "disconnected" while connected): shown, but it must not fail the check.
+        let stale = globalprotect_check(&conn("disconnected"), true);
+        assert!(stale.ok);
+        assert!(stale.detail.starts_with("disconnected (ignored"), "{}", stale.detail);
+        // Tunnel down as well: the report agrees and is shown as failing.
+        let down = globalprotect_check(&conn("disconnected"), false);
+        assert!(!down.ok);
+        assert_eq!(down.detail, "disconnected");
+        assert!(globalprotect_check(&conn("connected-non-pa"), true).ok);
+        assert!(globalprotect_check(&conn("connected-non-pa"), false).ok);
     }
 
     #[test]

@@ -38,7 +38,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Only an explicit "disconnected" counts: unknown values must never freeze the apps on their own.
+    /// Only an explicit "disconnected" counts, and even that is a cross-check: see `detect::globalprotect_check`.
     pub fn disconnected(&self) -> bool {
         self.status.to_ascii_lowercase().contains("disconnect")
     }

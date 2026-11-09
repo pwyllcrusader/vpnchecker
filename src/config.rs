@@ -78,7 +78,8 @@ pub struct VpnConfig {
     #[serde(default = "default_interface_pattern")]
     pub interface_pattern: String,
     pub subnets: Vec<IpNet>,
-    /// Treat the VPN as down when GlobalProtect itself reports a disconnected tunnel.
+    /// Show what GlobalProtect itself reports about the tunnel as a third check. It never decides the VPN state:
+    /// a "disconnected" report is ignored while the tunnel interface and the default route are up.
     #[serde(default = "yes")]
     pub check_globalprotect: bool,
 }
