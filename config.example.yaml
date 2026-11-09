@@ -18,7 +18,9 @@ vpn:
   # the default route goes through it. GlobalProtect hands out a different address on each connect: use the pool.
   subnets:
     - 10.0.0.0/8
-  # Also treat the VPN as down when GlobalProtect itself reports a disconnected tunnel (DEM block of its settings).
+  # Also show what GlobalProtect itself reports about the tunnel (DEM block of its settings) as a third check. It is a
+  # cross-check only: interface + default route decide, and a "disconnected" report is ignored while both are up
+  # (on some machines GlobalProtect keeps reporting "disconnected" although it is connected).
   check_globalprotect: true
 
 protect:
