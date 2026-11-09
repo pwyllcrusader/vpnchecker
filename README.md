@@ -11,11 +11,11 @@ A VPN kill switch for macOS, built for GlobalProtect (works with any VPN that cr
 
 Claude / Cursor / Rider protection is **always on**, in both modes. It has three layers, so no single one has to be perfect:
 
-1. **Freeze** – every Claude / Cursor / Rider process and all its children (MCP servers, terminals, extension hosts) is frozen with `SIGSTOP` (or killed) the moment the VPN drops, and resumed when the VPN is verified again. A frozen app cannot send anything.
+1. **Freeze** – every Claude / Cursor / Rider process and all its children (MCP servers, terminals, extension hosts) is frozen with `SIGSTOP` (or killed) the moment the VPN drops, and resumed when the VPN is verified again. A frozen app cannot send anything. Always on in `scoped` mode. In `full` mode pf already blocks everything outside the tunnel, so the freeze is off unless you set `protect.freeze: true`.
 2. **DNS shield** – lookups for `anthropic.com`, `claude.ai`, `claude.com`, `cursor.sh`, `cursor.com` are answered by a local responder through per-domain resolver files in `/etc/resolver`. The query never leaves the Mac, so the ISP / router never sees which AI service you were about to use.
 3. **Kernel block** – a [pf](https://man.openbsd.org/pf.conf) rule refuses the known Claude / Cursor server addresses on every interface except the tunnel. Unlike the freeze it has no reaction window: it also covers the first packets after wake-up, before the daemon has run.
 
-Layers 2 and 3 know only the Claude / Cursor servers. Rider (JetBrains) is protected by the freeze alone: it is an IDE that talks to your own repositories and services, so none of its hosts are shielded or blocked by default. Add them to `protect.domains` / `protect.hosts` if you want that.
+Layers 2 and 3 know only the Claude / Cursor servers. Rider (JetBrains) is protected by the freeze alone in `scoped` mode (and by the full block in `full` mode): it is an IDE that talks to your own repositories and services, so none of its hosts are shielded or blocked by default. Add them to `protect.domains` / `protect.hosts` if you want that.
 
 ## How it works
 
@@ -23,7 +23,7 @@ The daemon runs as a root launchd daemon, starts at boot and is restarted if it 
 
 **VPN state.** The VPN is up when an interface matching `interface_pattern` has an address from `vpn.subnets` **and** the default route goes through it (GlobalProtect keeps `utunN` with a pool address after disconnect, so the interface alone is not enough) **and** GlobalProtect does not report a disconnected tunnel. GlobalProtect's own state is read from the root-owned settings plist (`tunnel-status`, current gateway and tunnel address); only an explicit "disconnected" counts, so an unknown value can never freeze your apps by itself.
 
-**Sleep / wake.** While the Mac sleeps nothing runs, and right after wake GlobalProtect may still show a dead tunnel as up. The daemon notices the clock jump (`protect.wake_gap`), freezes first, keeps the apps frozen for at least `protect.wake_hold`, and resumes only after the VPN passed `protect.resume_checks` consecutive checks spread over a minimum time. Every wake therefore costs a short pause even when the VPN is fine. The kernel block (layer 3) covers the few hundred milliseconds before the daemon's first check.
+**Sleep / wake.** While the Mac sleeps nothing runs, and right after wake GlobalProtect may still show a dead tunnel as up. The daemon notices the clock jump (`protect.wake_gap`), blocks first (and, when the freeze is on, freezes the apps), keeps them blocked for at least `protect.wake_hold`, and resumes only after the VPN passed `protect.resume_checks` consecutive checks spread over a minimum time. With the freeze on, every wake therefore costs a short pause even when the VPN is fine. The kernel block (layer 3) covers the few hundred milliseconds before the daemon's first check.
 
 **Gateway auto-discovery.** The daemon learns VPN gateways from five sources so GlobalProtect can always reconnect, also to a **new** gateway after a reconnect (relevant in `full` mode and for keeping gateways out of the protected set):
 
@@ -137,6 +137,7 @@ vpn:
   check_globalprotect: true
 
 protect:                        # Claude / Cursor / Rider, always active
+  freeze: false                 # full mode: also freeze the apps (always on in scoped)
   action: stop                  # stop (freeze) | kill
   dns_shield: true
   pf_block: true
@@ -167,7 +168,7 @@ sudo pfctl -a com.apple/vpnchecker -sr     # rules are always loaded, with or wi
 ls /etc/resolver                           # allow.domains always (forwarder); while the VPN is down also anthropic.com, claude.ai, cursor.sh, ... (shield)
 ```
 
-Disconnect GlobalProtect: Claude, Cursor and Rider freeze within a fraction of a second (`vpnchecker procs` shows STAT `T`), `vpnchecker status` shows `Blocked`. Reconnect: after a second or two they resume. Closing and opening the laptop lid does the same, with a pause of about `wake_hold`.
+Disconnect GlobalProtect (in `scoped` mode, or with `protect.freeze: true`): Claude, Cursor and Rider freeze within a fraction of a second (`vpnchecker procs` shows STAT `T`), `vpnchecker status` shows `Blocked`. Reconnect: after a second or two they resume. Closing and opening the laptop lid does the same, with a pause of about `wake_hold`.
 
 ## Troubleshooting
 
