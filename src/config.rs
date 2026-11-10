@@ -62,6 +62,16 @@ pub enum Mode {
     Full,
 }
 
+impl Mode {
+    /// The spelling used in the config file.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Scoped => "scoped",
+            Mode::Full => "full",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
@@ -373,6 +383,92 @@ pub fn insert_allow_domain(text: &str, domain: &str) -> Result<String> {
             lines.insert(i + 1, format!("{item_pad}- {domain}"));
         }
         None => lines.insert(key + 1, format!("{pad}  - {domain}")),
+    }
+    Ok(lines.join("\n") + "\n")
+}
+
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+fn has_content(line: &str) -> bool {
+    !line.trim().is_empty() && !line.trim_start().starts_with('#')
+}
+
+/// Sets the top-level `mode:` by editing the text, so comments and layout survive.
+pub fn set_mode(text: &str, mode: Mode) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    match lines.iter().position(|l| l.starts_with("mode:")) {
+        Some(i) => {
+            let rest = lines[i]["mode:".len()..].trim_start();
+            let after = rest.find(|c: char| c.is_whitespace() || c == '#').map_or("", |end| &rest[end..]);
+            lines[i] = format!("mode: {}{after}", mode.as_str());
+        }
+        None => lines.insert(0, format!("mode: {}", mode.as_str())),
+    }
+    lines.join("\n") + "\n"
+}
+
+/// Replaces `vpn.subnets` by editing the text, so comments and layout survive.
+pub fn set_vpn_subnets(text: &str, subnets: &[IpNet]) -> Result<String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let flow = subnets.iter().map(IpNet::to_string).collect::<Vec<_>>().join(", ");
+
+    let Some(vpn) = lines.iter().position(|l| l.starts_with("vpn:")) else {
+        lines.extend(["vpn:".to_string(), format!("  subnets: [{flow}]")]);
+        return Ok(lines.join("\n") + "\n");
+    };
+    if has_content(&lines[vpn]["vpn:".len()..]) {
+        bail!("`vpn:` is written inline; edit the config manually");
+    }
+    let end = (vpn + 1..lines.len())
+        .find(|&i| has_content(&lines[i]) && indent_of(&lines[i]) == 0)
+        .unwrap_or(lines.len());
+    let key = (vpn + 1..end).find(|&i| has_content(&lines[i]) && lines[i].trim_start().starts_with("subnets:"));
+
+    let Some(key) = key else {
+        let child = (vpn + 1..end).find(|&i| has_content(&lines[i])).map_or(2, |i| indent_of(&lines[i]));
+        lines.insert(vpn + 1, format!("{}subnets: [{flow}]", " ".repeat(child)));
+        return Ok(lines.join("\n") + "\n");
+    };
+
+    let key_indent = indent_of(&lines[key]);
+    let pad = " ".repeat(key_indent);
+    let rest = lines[key].trim_start()["subnets:".len()..].trim_start().to_string();
+    if let Some(list) = rest.strip_prefix('[') {
+        let Some((_, after)) = list.split_once(']') else {
+            bail!("multi-line `subnets: [...]` is not supported; edit the config manually");
+        };
+        lines[key] = format!("{pad}subnets: [{flow}]{after}");
+        return Ok(lines.join("\n") + "\n");
+    }
+    if has_content(&rest) {
+        bail!("unexpected value for vpn.subnets; edit the config manually");
+    }
+
+    // Block list: the old items go, comments between them go with them.
+    let mut items = None;
+    for (i, line) in lines.iter().enumerate().take(end).skip(key + 1) {
+        if !has_content(line) {
+            continue;
+        }
+        let item = line.trim_start().starts_with("- ") || line.trim() == "-";
+        if item && indent_of(line) >= key_indent {
+            items = Some(items.map_or((i, i), |(first, _)| (first, i)));
+        } else {
+            break;
+        }
+    }
+    let item_pad = match items {
+        Some((first, last)) => {
+            let item_pad = " ".repeat(indent_of(&lines[first]));
+            lines.drain(first..=last);
+            item_pad
+        }
+        None => format!("{pad}  "),
+    };
+    for (n, net) in subnets.iter().enumerate() {
+        lines.insert(key + 1 + n, format!("{item_pad}- {net}"));
     }
     Ok(lines.join("\n") + "\n")
 }
@@ -744,5 +840,48 @@ mod tests {
         assert_eq!(domains_after_insert(&format!("{base}allow:\n  domains:\n  lan: true\n")), ["new.example"]);
         assert!(insert_allow_domain(&format!("{base}allow:\n  domains: [\n    a.com]\n"), "x.com").is_err());
         assert!(insert_allow_domain(&format!("{base}allow: {{lan: true}}\n"), "x.com").is_err());
+    }
+
+    #[test]
+    fn set_mode_keeps_the_rest_of_the_file() {
+        let scoped = set_mode(TEMPLATE, Mode::Scoped);
+        assert_eq!(parse(&scoped).unwrap().mode, Mode::Scoped);
+        assert_eq!(scoped.lines().count(), TEMPLATE.lines().count(), "only the mode line changes");
+        assert_eq!(set_mode(&scoped, Mode::Full), TEMPLATE);
+
+        let base = "vpn:\n  subnets: [10.4.0.0/16]\n";
+        assert_eq!(set_mode(base, Mode::Scoped), format!("mode: scoped\n{base}"));
+        assert_eq!(set_mode(&format!("mode: full  # why\n{base}"), Mode::Scoped), format!("mode: scoped  # why\n{base}"));
+        assert_eq!(set_mode(&format!("mode:full\n{base}"), Mode::Scoped), format!("mode: scoped\n{base}"));
+    }
+
+    fn subnets_after(text: &str, want: &[&str]) -> String {
+        let nets: Vec<IpNet> = want.iter().map(|s| s.parse().unwrap()).collect();
+        let updated = set_vpn_subnets(text, &nets).unwrap();
+        assert_eq!(parse(&updated).unwrap().vpn.subnets, nets, "{updated}");
+        updated
+    }
+
+    #[test]
+    fn set_vpn_subnets_variants() {
+        // The template: a block list under a comment, followed by another key.
+        let updated = subnets_after(TEMPLATE, &["172.16.0.0/12", "100.64.0.0/10"]);
+        assert!(updated.contains("  subnets:\n    - 172.16.0.0/12\n    - 100.64.0.0/10\n"), "{updated}");
+        assert!(!updated.contains("10.0.0.0/8"));
+        assert!(parse(&updated).unwrap().vpn.check_globalprotect, "the keys after the list survive");
+
+        let flow = subnets_after("vpn:\n  subnets: [10.0.0.0/8]  # pool\n  check_globalprotect: false\n", &["10.4.0.0/16"]);
+        assert_eq!(flow, "vpn:\n  subnets: [10.4.0.0/16]  # pool\n  check_globalprotect: false\n");
+
+        let block = "mode: full\nvpn:\n  subnets:\n  - 10.0.0.0/8\n  # old\n  - 10.1.0.0/16\n  check_globalprotect: false\nallow: {}\n";
+        assert_eq!(
+            subnets_after(block, &["192.168.0.0/16"]),
+            "mode: full\nvpn:\n  subnets:\n  - 192.168.0.0/16\n  check_globalprotect: false\nallow: {}\n"
+        );
+
+        subnets_after("vpn:\n  interface_pattern: '^utun\\d+$'\n", &["10.4.0.0/16"]);
+        subnets_after("mode: scoped\n", &["10.4.0.0/16"]);
+        assert!(set_vpn_subnets("vpn: {subnets: [10.0.0.0/8]}\n", &[]).is_err());
+        assert!(set_vpn_subnets("vpn:\n  subnets: [\n    10.0.0.0/8]\n", &[]).is_err());
     }
 }

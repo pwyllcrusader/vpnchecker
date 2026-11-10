@@ -82,6 +82,18 @@ curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/
 
 The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), and runs `sudo vpnchecker install`, which copies the binary to `/Library/PrivilegedHelperTools/vpnchecker` and links it as `/usr/local/bin/vpnchecker`, so the `vpnchecker` command works in every shell. `--mode scoped|full` (or `VPNCHECKER_MODE`) sets `mode` in the config, also when the config already exists; without it a new config starts in `full`. From then on the daemon offers new releases by itself (see **Updates** above); `sudo vpnchecker update` or the same command updates at once. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
 
+### Installer package
+
+No terminal needed: download [`vpnchecker.pkg`](https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/vpnchecker.pkg), connect the VPN and open the file. Installer asks for your Mac password, then setup asks one question, what to restrict while the VPN is down: the whole Mac (`full`) or only Claude, Cursor and Rider (`scoped`). After that it installs the daemon exactly like `sudo vpnchecker install` does.
+
+- If the VPN is not connected, setup waits with a *Check Again* button instead of installing, because a daemon started without the VPN would cut the connection at once. *Cancel* leaves nothing installed.
+- A new config takes the VPN address pool from the connected tunnel when that is outside the default `10.0.0.0/8`; an existing config is never changed.
+- On a Mac that already runs vpnchecker the package updates it and asks nothing.
+
+The package is not signed with an Apple Developer ID, so macOS does not open it on a plain double click. Try to open it once, then allow it under *System Settings → Privacy & Security → Open Anyway* (macOS 14 and earlier: Control-click the file → *Open*). `vpnchecker.pkg.sha256` next to it in the release holds its checksum.
+
+The same guided setup from a terminal: `sudo vpnchecker setup`.
+
 ### From source
 
 ```sh
@@ -107,6 +119,7 @@ vpnchecker status
 
 | Command | Root | Description |
 |---|---|---|
+| `setup [--user NAME]` | yes | Guided setup with dialogs, as run by the installer package: asks for the mode, waits until the VPN is detected, then installs |
 | `install` / `uninstall` | yes | Install / remove the launchd daemon (`uninstall` also removes pf rules, resumes frozen apps and removes the DNS shield) |
 | `start` / `restart` | yes | Start / restart the installed daemon |
 | `stop [--keep-block]` | yes | Stop the daemon, remove its pf rules (`--keep-block` keeps the exit rules), resume frozen apps, remove the DNS shield |
@@ -221,7 +234,7 @@ vpnchecker --socket ./vc.sock run --dry-run -v    # needs no root, shows what wo
 
 Tests cover the state machine (`guard`), process selection and real SIGSTOP / SIGCONT on a child process, the DNS responder over real UDP, pf rule rendering, GlobalProtect plist parsing and config validation.
 
-Release: automatic. Every merge to `master` that touches `src/`, `Cargo.*` or `install.sh` runs the `release` workflow: it bumps the patch version (or takes a `version` raised in the PR; *Run workflow* offers minor / major), commits and tags it, builds the universal binary, publishes it with `install.sh` to GitHub Releases and the crate to crates.io (secret `CARGO_REGISTRY_TOKEN`). Machines with `update.auto` offer it to their user within `update.interval` (or install it at once with `update.confirm: false`), so a release must keep accepting existing configs: one that rejects a config is skipped on that machine.
+Release: automatic. Every merge to `master` that touches `src/`, `Cargo.*`, `install.sh` or `pkg/` runs the `release` workflow: it bumps the patch version (or takes a `version` raised in the PR; *Run workflow* offers minor / major), commits and tags it, builds the universal binary and the installer package (`pkg/build.sh <binary> <output.pkg>`, also runnable locally), publishes them with `install.sh` to GitHub Releases and the crate to crates.io (secret `CARGO_REGISTRY_TOKEN`). Machines with `update.auto` offer it to their user within `update.interval` (or install it at once with `update.confirm: false`), so a release must keep accepting existing configs: one that rejects a config is skipped on that machine.
 
 ## License
 

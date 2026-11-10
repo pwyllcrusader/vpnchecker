@@ -27,7 +27,17 @@ pub fn invoking_user() -> Result<User> {
 }
 
 pub fn default_config_path() -> Result<PathBuf> {
-    Ok(invoking_user()?.dir.join(".config/vpnchecker/config.yaml"))
+    Ok(config_path_of(&invoking_user()?))
+}
+
+pub fn config_path_of(user: &User) -> PathBuf {
+    user.dir.join(".config/vpnchecker/config.yaml")
+}
+
+/// The user logged in at the screen, if any: the owner of the console device (root at the login window).
+pub fn console_user() -> Option<User> {
+    let uid = file_owner(std::path::Path::new("/dev/console")).filter(|uid| !uid.is_root())?;
+    User::from_uid(uid).ok().flatten()
 }
 
 pub fn file_owner(path: &std::path::Path) -> Option<Uid> {

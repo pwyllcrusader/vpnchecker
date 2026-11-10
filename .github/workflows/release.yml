@@ -5,7 +5,7 @@ name: release
 on:
   push:
     branches: [master]
-    paths: ['src/**', 'Cargo.toml', 'Cargo.lock', 'install.sh']
+    paths: ['src/**', 'Cargo.toml', 'Cargo.lock', 'install.sh', 'pkg/**']
   workflow_dispatch:
     inputs:
       bump:
@@ -38,7 +38,7 @@ jobs:
         run: |
           last=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
           if [ "$GITHUB_EVENT_NAME" = push ] && [ -n "$last" ] \
-            && git diff --quiet "$last" HEAD -- src Cargo.toml Cargo.lock install.sh; then
+            && git diff --quiet "$last" HEAD -- src Cargo.toml Cargo.lock install.sh pkg; then
             echo "Nothing to release since $last"
             exit 0
           fi
@@ -93,6 +93,14 @@ jobs:
           tar -czf vpnchecker-macos-universal.tar.gz vpnchecker
           shasum -a 256 vpnchecker-macos-universal.tar.gz > vpnchecker-macos-universal.tar.gz.sha256
 
+      # Unsigned: there is no Developer ID certificate. With one, set PKG_SIGN_IDENTITY here (see pkg/build.sh).
+      - name: Build installer package
+        run: |
+          dist="$RUNNER_TEMP/dist"
+          pkg/build.sh "$dist/vpnchecker" "$dist/vpnchecker.pkg"
+          cd "$dist"
+          shasum -a 256 vpnchecker.pkg > vpnchecker.pkg.sha256
+
       - name: Commit and tag
         run: |
           git config user.name 'github-actions[bot]'
@@ -111,6 +119,8 @@ jobs:
           gh release create "v$VERSION" --verify-tag --title "v$VERSION" --generate-notes \
             "$RUNNER_TEMP/dist/vpnchecker-macos-universal.tar.gz" \
             "$RUNNER_TEMP/dist/vpnchecker-macos-universal.tar.gz.sha256" \
+            "$RUNNER_TEMP/dist/vpnchecker.pkg" \
+            "$RUNNER_TEMP/dist/vpnchecker.pkg.sha256" \
             install.sh
 
       - name: Publish to crates.io

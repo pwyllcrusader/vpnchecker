@@ -18,6 +18,11 @@ pub const BIN: &str = "/Library/PrivilegedHelperTools/vpnchecker";
 // CLI symlink, so `vpnchecker` works in any shell however the daemon was installed (install.sh, cargo install).
 const LINK: &str = "/usr/local/bin/vpnchecker";
 
+/// Whether the daemon is set up on this Mac (running or not).
+pub fn installed() -> bool {
+    Path::new(PLIST).exists()
+}
+
 pub fn install(config_path: &Path, socket: &Path) -> Result<()> {
     sys::require_root()?;
     let config_path = config_path

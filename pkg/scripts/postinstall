@@ -1,0 +1,14 @@
+#!/bin/sh
+# Runs as root when the installer package is installed. The package has no payload: the binary travels next to
+# this script, and `vpnchecker setup` asks its questions and installs the daemon the same way
+# `sudo vpnchecker install` does. So a cancelled setup leaves nothing behind, and an existing installation is only
+# replaced after the new binary accepted its config.
+# Exit code 0: installed. Anything else makes Installer report a failed installation.
+set -u
+
+bin="$(cd "$(dirname "$0")" && pwd)/vpnchecker"
+# A downloaded package is quarantined; the daemon binary must not carry that mark into /Library.
+/usr/bin/xattr -d com.apple.quarantine "$bin" 2>/dev/null || true
+
+echo "vpnchecker package: installing $("$bin" --version)"
+exec "$bin" setup

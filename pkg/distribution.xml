@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Installer UI of vpnchecker.pkg. pkg/build.sh fills in the version. -->
+<installer-gui-script minSpecVersion="2">
+    <title>vpnchecker @VERSION@</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <choices-outline>
+        <line choice="default"/>
+    </choices-outline>
+    <choice id="default" title="vpnchecker">
+        <pkg-ref id="com.vpnchecker.pkg"/>
+    </choice>
+    <pkg-ref id="com.vpnchecker.pkg" version="@VERSION@" onConclusion="none">vpnchecker-component.pkg</pkg-ref>
+</installer-gui-script>
