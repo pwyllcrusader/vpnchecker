@@ -25,6 +25,8 @@ The daemon runs as a root launchd daemon, starts at boot and is restarted if it 
 
 **Sleep / wake.** While the Mac sleeps nothing runs, and right after wake GlobalProtect may still show a dead tunnel as up. The daemon notices the clock jump (`protect.wake_gap`), blocks first (and, when the freeze is on, freezes the apps), keeps them blocked for at least `protect.wake_hold`, and resumes only after the VPN passed `protect.resume_checks` consecutive checks spread over a minimum time. With the freeze on, every wake therefore costs a short pause even when the VPN is fine. The kernel block (layer 3) covers the few hundred milliseconds before the daemon's first check.
 
+**Keeping the Mac awake** (`always_on.enabled: true`, off by default). A long Claude / Cursor task can outlast the idle-sleep timer; the Mac then sleeps, Wi-Fi and the VPN go down and the task breaks. With `always_on` the daemon holds an idle-sleep assertion (`caffeinate -i`, on battery too) only while Claude / Cursor are busy: every 10s it sums the CPU time of their processes and all children (tools, builds, tests), and a sample of at least `always_on.cpu` percent of one core counts as busy. The Mac stays awake until `always_on.linger` has passed since the last busy sample, so a long, quiet model think does not end it. An app that is merely open uses next to nothing and lets the Mac sleep as usual. The display may still turn off, and closing the lid still puts the Mac to sleep. `caffeinate` runs with `-w <daemon pid>`, so it ends with the daemon even on a crash. `vpnchecker status` shows the measured CPU (to tune `always_on.cpu`), `pmset -g assertions | grep caffeinate` the assertion itself.
+
 **Gateway auto-discovery.** The daemon learns VPN gateways from five sources so GlobalProtect can always reconnect, also to a **new** gateway after a reconnect (relevant in `full` mode and for keeping gateways out of the protected set):
 
 - the gateway GlobalProtect reports for its current connection (root-owned plist; no DNS needed, the address is allowed the moment it changes);
@@ -151,6 +153,11 @@ update:
   auto: true                    # look for newer releases
   confirm: true                 # ask before installing one
   interval: 24h
+
+always_on:
+  enabled: false                # keep the Mac from idle sleep while Claude / Cursor are busy
+  cpu: 5                        # % of one core over 10s that counts as busy
+  linger: 10m                   # stay awake this long after the last busy sample
 ```
 
 Everything under `protect` has a default covering Claude.app, Claude Code (`claude`), Cursor.app, `cursor-agent`, Rider.app (including `Rider.Backend` and `fsnotifier`), their extensions and every child process; run `vpnchecker procs` to see what matches on your machine.

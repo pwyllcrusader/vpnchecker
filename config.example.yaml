@@ -114,5 +114,23 @@ update:
   confirm: true
   interval: 24h
 
+always_on:
+  # Keep the Mac from idle sleep (and so Wi-Fi and the VPN up) while Claude / Cursor are busy with a task. The display
+  # may still turn off; closing the lid still puts the Mac to sleep.
+  enabled: false
+  # Busy = the processes below and their children (tools, builds, tests) used at least this much CPU, in percent of
+  # one core over a 10s sample. `vpnchecker status` shows the current value, to tune it for this Mac.
+  cpu: 5
+  # Stay awake this long after the last busy sample (a long model think can be quiet).
+  linger: 10m
+  process_patterns:
+    - '/Claude\.app/Contents/'
+    - '/Cursor\.app/Contents/'
+    - '/\.cursor/(extensions|bin|cursor-server)/'
+    - '@anthropic-ai/claude-code'
+    - '/\.local/share/claude/'
+    - '(^|/)claude( |$)'
+    - '(^|/)cursor-agent( |$)'
+
 # macOS notification when the protection blocks / resumes the apps
 notify: true

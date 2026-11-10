@@ -50,6 +50,9 @@ pub struct Config {
     pub check: CheckConfig,
     #[serde(default)]
     pub update: UpdateConfig,
+    /// Keep the Mac from idle sleep while Claude / Cursor are busy. Off by default.
+    #[serde(default)]
+    pub always_on: AlwaysOnConfig,
     #[serde(default = "yes")]
     pub notify: bool,
 }
@@ -246,6 +249,37 @@ impl Default for UpdateConfig {
             auto: true,
             confirm: true,
             interval: Duration::from_secs(24 * 3600),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AlwaysOnConfig {
+    /// Hold an idle-sleep assertion (`caffeinate -i`) while Claude / Cursor are busy. Closing the lid still sleeps.
+    pub enabled: bool,
+    /// CPU of the matched processes and their children, in percent of one core over a sample, that counts as busy.
+    pub cpu: f64,
+    /// Stay awake this long after the last busy sample (covers quiet stretches such as a long model think).
+    #[serde(with = "humantime_serde")]
+    pub linger: Duration,
+    /// Regexes matched against the full command line; a match, and all its children, is watched.
+    pub process_patterns: Vec<String>,
+}
+
+impl Default for AlwaysOnConfig {
+    fn default() -> Self {
+        // The Claude / Cursor part of the protected set: an idle IDE such as Rider indexes in the background.
+        let process_patterns = ProtectConfig::default()
+            .process_patterns
+            .into_iter()
+            .filter(|p| !p.contains("Rider"))
+            .collect();
+        Self {
+            enabled: false,
+            cpu: 5.0,
+            linger: Duration::from_secs(10 * 60),
+            process_patterns,
         }
     }
 }
@@ -451,6 +485,19 @@ impl Config {
         if p.dns_port < 1024 {
             bail!("protect.dns_port must be 1024 or higher");
         }
+        let a = &self.always_on;
+        if a.cpu.is_nan() || a.cpu <= 0.0 {
+            bail!("always_on.cpu must be positive");
+        }
+        if a.linger < Duration::from_secs(10) {
+            bail!("always_on.linger must be at least 10s");
+        }
+        for pattern in &a.process_patterns {
+            Regex::new(pattern).with_context(|| format!("always_on.process_patterns: {pattern:?}"))?;
+        }
+        if a.enabled && a.process_patterns.is_empty() {
+            bail!("always_on.process_patterns must not be empty");
+        }
         Ok(())
     }
 
@@ -619,6 +666,34 @@ mod tests {
 
         assert!(parse(&format!("{base}update:\n  interval: 5m\n")).is_err(), "no polling GitHub every few minutes");
         assert!(parse(&format!("{base}update:\n  channel: beta\n")).is_err(), "unknown field");
+    }
+
+    #[test]
+    fn always_on_defaults_and_limits() {
+        let base = "vpn:\n  subnets: [10.4.0.0/16]\n";
+        let cfg = parse(base).unwrap();
+        assert!(!cfg.always_on.enabled, "opt-in");
+        assert_eq!(cfg.always_on.linger, Duration::from_secs(600));
+        assert!(cfg.always_on.process_patterns.iter().any(|p| p.contains("Cursor")));
+        assert!(!cfg.always_on.process_patterns.iter().any(|p| p.contains("Rider")), "only Claude / Cursor");
+        let template = parse(TEMPLATE).unwrap();
+        assert!(!template.always_on.enabled);
+        assert_eq!(template.always_on.process_patterns, cfg.always_on.process_patterns, "the template spells the defaults out");
+
+        let on = parse(&format!("{base}always_on:\n  enabled: true\n  cpu: 2.5\n  linger: 30s\n")).unwrap();
+        assert!(on.always_on.enabled);
+        assert_eq!(on.always_on.cpu, 2.5);
+        assert_eq!(on.always_on.linger, Duration::from_secs(30));
+
+        for bad in [
+            "always_on:\n  cpu: 0\n",
+            "always_on:\n  linger: 5s\n",
+            "always_on:\n  process_patterns: ['(']\n",
+            "always_on:\n  enabled: true\n  process_patterns: []\n",
+            "always_on:\n  lid: true\n",
+        ] {
+            assert!(parse(&format!("{base}{bad}")).is_err(), "should reject: {bad}");
+        }
     }
 
     #[test]

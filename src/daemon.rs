@@ -24,6 +24,7 @@ use crate::ipc::{self, Control, Shared, Snapshot};
 use crate::pf::{self, Pf, Via};
 use crate::procs::{self, Matcher};
 use crate::resolver::{self, Resolver};
+use crate::awake::{self, Awake};
 use crate::{globalprotect, launchd, notify, routewatch, sys, update};
 
 // Survives restarts so exit rules and reconnects know addresses seen on and off the VPN.
@@ -65,6 +66,7 @@ struct Daemon {
     next_update: Instant,
     updating: Arc<AtomicBool>,
     control: mpsc::Sender<Control>,
+    awake: Awake,
 }
 
 pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<()> {
@@ -113,6 +115,7 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
         }
     };
     let matcher = Matcher::new(&cfg.protect.patterns())?;
+    let awake = Awake::new(&cfg.always_on.process_patterns)?;
     let shield = DnsShield::new(cfg.protect.domains.clone(), cfg.protect.dns_port, dry_run);
     let shield_ready = if cfg.protect.dns_shield && !dry_run {
         match dnsshield::serve(cfg.protect.dns_port).await {
@@ -152,12 +155,14 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
         next_update: Instant::now() + FIRST_UPDATE_CHECK,
         updating: Arc::new(AtomicBool::new(false)),
         control: tx,
+        awake,
     };
     info!(
         version = update::CURRENT,
         mode = ?d.cfg.mode,
         freeze = d.cfg.freezes(),
         action = ?d.cfg.protect.action,
+        always_on = d.cfg.always_on.enabled,
         "vpnchecker started"
     );
     if d.cfg.update.auto && !self_update && !dry_run {
@@ -182,6 +187,8 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     let (mut check_tick, mut resolve_tick, mut protect_tick) = d.ticks();
     let mut update_tick = interval(UPDATE_POLL);
     update_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut awake_tick = interval(awake::SAMPLE);
+    awake_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         let mut reconfigured = false;
@@ -198,6 +205,10 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
                 d.apply();
             }
             _ = update_tick.tick() => d.maybe_update(),
+            _ = awake_tick.tick() => {
+                d.awake.tick(&d.cfg.always_on, d.dry_run).await;
+                d.publish();
+            }
             Some(control) = rx.recv() => match control {
                 Control::Reload => reconfigured = d.reload().await,
                 Control::Recheck => d.check().await,
@@ -221,6 +232,7 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
     info!("exiting, leaving rules that pass only traffic sourced from vpn.subnets");
     d.apply_via(Some(&Via::Subnets(d.cfg.vpn_subnets())));
     d.save_cache();
+    d.awake.release().await;
     if d.proxy.is_some() && !dry_run {
         let _ = dnsproxy::remove_resolver_files();
     }
@@ -640,6 +652,9 @@ impl Daemon {
         snap.shield = self.shield.active();
         snap.auto_update = self.self_update && self.cfg.update.auto;
         snap.update_confirm = self.cfg.update.confirm;
+        snap.always_on = self.cfg.always_on.enabled;
+        snap.awake = self.awake.active();
+        snap.awake_cpu = self.awake.cpu;
     }
 
     async fn reload(&mut self) -> bool {
@@ -653,12 +668,18 @@ impl Daemon {
                     Ok(matcher) => self.matcher = matcher,
                     Err(e) => warn!("keeping previous process patterns: {e:#}"),
                 }
+                if let Err(e) = self.awake.set_patterns(&cfg.always_on.process_patterns) {
+                    warn!("keeping previous always_on patterns: {e:#}");
+                }
                 self.shield.configure(cfg.protect.domains.clone(), cfg.protect.dns_port);
                 self.cfg = cfg;
                 info!("config reloaded");
                 if !self.cfg.freezes() && self.frozen > 0 {
                     // The freeze was switched off while the apps are frozen: don't wait for the VPN to come back.
                     self.resume().await;
+                }
+                if !self.cfg.always_on.enabled {
+                    self.awake.tick(&self.cfg.always_on, self.dry_run).await;
                 }
                 self.sync_zones();
                 self.resolve().await;
