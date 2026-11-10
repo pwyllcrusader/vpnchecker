@@ -80,7 +80,7 @@ curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/
 curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh -s -- --mode scoped
 ```
 
-Скрипт скачивает готовый универсальный бинарник из последнего GitHub-релиза, проверяет контрольную сумму, создаёт `~/.config/vpnchecker/config.yaml`, если его нет, отказывается продолжать, если VPN не обнаружен (иначе пропал бы интернет), выполняет `sudo vpnchecker install` и создаёт ссылку `/usr/local/bin/vpnchecker`. `--mode scoped|full` (или `VPNCHECKER_MODE`) записывает `mode` в конфиг, в том числе в уже существующий; без него новый конфиг начинает с `full`. Дальше демон сам предлагает новые релизы (см. **Обновления** выше); `sudo vpnchecker update` или та же команда обновляют сразу. Если пул адресов VPN не `10.0.0.0/8`, укажите `vpn.subnets` в конфиге и запустите ещё раз.
+Скрипт скачивает готовый универсальный бинарник из последнего GitHub-релиза, проверяет контрольную сумму, создаёт `~/.config/vpnchecker/config.yaml`, если его нет, отказывается продолжать, если VPN не обнаружен (иначе пропал бы интернет), и выполняет `sudo vpnchecker install`, который копирует бинарник в `/Library/PrivilegedHelperTools/vpnchecker` и создаёт ссылку `/usr/local/bin/vpnchecker`, чтобы команда `vpnchecker` работала в любой оболочке. `--mode scoped|full` (или `VPNCHECKER_MODE`) записывает `mode` в конфиг, в том числе в уже существующий; без него новый конфиг начинает с `full`. Дальше демон сам предлагает новые релизы (см. **Обновления** выше); `sudo vpnchecker update` или та же команда обновляют сразу. Если пул адресов VPN не `10.0.0.0/8`, укажите `vpn.subnets` в конфиге и запустите ещё раз.
 
 ### Из исходников
 
@@ -96,7 +96,7 @@ vpnchecker config validate
 vpnchecker diagnose
 vpnchecker procs        # процессы Claude / Cursor / Rider, которые будут заморожены
 
-# 3. Установить как launchd-демон
+# 3. Установить как launchd-демон (заодно создаёт ссылку /usr/local/bin/vpnchecker, после этого копия cargo не нужна)
 sudo "$(which vpnchecker)" install
 vpnchecker status
 ```

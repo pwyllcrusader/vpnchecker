@@ -274,6 +274,9 @@ async fn self_update(
         }
     }
     update::install(latest, config, Path::new(launchd::BIN)).await?;
+    if let Err(e) = launchd::ensure_cli_link() {
+        warn!(error = %format!("{e:#}"), "could not link the vpnchecker command");
+    }
     info!(from = %current, to = %latest, "new version installed, restarting");
     let _ = control.send(Control::Updated(latest.to_string())).await;
     Ok(())

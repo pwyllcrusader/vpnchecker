@@ -198,6 +198,9 @@ async fn update_command(config_path: &Path, check: bool) -> Result<()> {
         update::Outcome::UpToDate { current, latest } => println!("up to date: {current} (latest release {latest})"),
         update::Outcome::Updated { from, to } => {
             println!("updated {from} -> {to}");
+            if let Err(e) = launchd::ensure_cli_link() {
+                eprintln!("could not link the vpnchecker command: {e:#}");
+            }
             launchd::restart()?;
             println!("daemon restarted");
         }

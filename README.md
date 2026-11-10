@@ -80,7 +80,7 @@ To restrict only Claude / Cursor / Rider and leave the rest of the Mac alone, pa
 curl -fsSL https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/install.sh | sh -s -- --mode scoped
 ```
 
-The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), runs `sudo vpnchecker install` and links `/usr/local/bin/vpnchecker`. `--mode scoped|full` (or `VPNCHECKER_MODE`) sets `mode` in the config, also when the config already exists; without it a new config starts in `full`. From then on the daemon offers new releases by itself (see **Updates** above); `sudo vpnchecker update` or the same command updates at once. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
+The script downloads the prebuilt universal binary from the latest GitHub release, verifies its checksum, creates `~/.config/vpnchecker/config.yaml` if missing, refuses to continue if the VPN is not detected (it would cut the internet), and runs `sudo vpnchecker install`, which copies the binary to `/Library/PrivilegedHelperTools/vpnchecker` and links it as `/usr/local/bin/vpnchecker`, so the `vpnchecker` command works in every shell. `--mode scoped|full` (or `VPNCHECKER_MODE`) sets `mode` in the config, also when the config already exists; without it a new config starts in `full`. From then on the daemon offers new releases by itself (see **Updates** above); `sudo vpnchecker update` or the same command updates at once. If the VPN pool is not `10.0.0.0/8`, set `vpn.subnets` in the config and run it again.
 
 ### From source
 
@@ -96,7 +96,7 @@ vpnchecker config validate
 vpnchecker diagnose
 vpnchecker procs        # the Claude / Cursor / Rider processes that will be frozen
 
-# 3. Install as a launchd daemon
+# 3. Install as a launchd daemon (also links /usr/local/bin/vpnchecker, so the cargo copy can go afterwards)
 sudo "$(which vpnchecker)" install
 vpnchecker status
 ```
