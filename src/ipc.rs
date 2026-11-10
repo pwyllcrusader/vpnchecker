@@ -49,6 +49,15 @@ pub struct Snapshot {
     /// It asks the user before installing one.
     #[serde(default)]
     pub update_confirm: bool,
+    /// `always_on` is enabled.
+    #[serde(default)]
+    pub always_on: bool,
+    /// The Mac is kept from idle sleep because Claude / Cursor are busy.
+    #[serde(default)]
+    pub awake: bool,
+    /// CPU of the watched Claude / Cursor processes at the last sample, percent of one core.
+    #[serde(default)]
+    pub awake_cpu: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

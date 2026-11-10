@@ -1,3 +1,4 @@
+mod awake;
 mod config;
 mod daemon;
 mod detect;
@@ -280,6 +281,12 @@ async fn status(socket: &Path, json: bool) -> Result<()> {
         snap.protected_ips
     );
     println!("allowlist:  {} addresses", snap.allowed);
+    let awake = match (snap.always_on, snap.awake) {
+        (false, _) => "off".to_string(),
+        (true, true) => format!("keeping the Mac awake (Claude / Cursor CPU {:.1}%)", snap.awake_cpu),
+        (true, false) => format!("idle, sleep allowed (Claude / Cursor CPU {:.1}%)", snap.awake_cpu),
+    };
+    println!("always_on:  {awake}");
     println!("last check: {} ago", ago(snap.last_check));
     println!("config:     {}", snap.config);
     println!("pid:        {}", snap.pid);
