@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    :root { color-scheme: light dark; }
+    body { font: 13px/1.45 -apple-system, "Helvetica Neue", sans-serif; margin: 0 4px; }
+    h1 { font-size: 17px; margin: 0 0 8px; }
+    p, ul { margin: 0 0 10px; }
+    ul { padding-left: 20px; }
+    code { font: 12px Menlo, monospace; }
+    .note { border-left: 3px solid #f5a623; padding-left: 9px; }
+    @media (prefers-color-scheme: dark) { body { color: #f2f2f2; } }
+</style>
+</head>
+<body>
+<h1>vpnchecker @VERSION@</h1>
+<p>A VPN kill switch: Claude, Cursor and Rider reach the internet only through the VPN. If you want, the whole
+Mac is restricted the same way.</p>
+<p class="note"><b>Connect your VPN before you continue.</b> vpnchecker starts only once it sees the VPN.
+Otherwise it would cut the connection right away.</p>
+<p>After you enter your Mac password, setup asks one question: which mode to run in.</p>
+<ul>
+    <li><b>Full:</b> while the VPN is down, nothing leaves this Mac except to hosts you allow.</li>
+    <li><b>Scoped:</b> while the VPN is down, only Claude, Cursor and Rider are held back.</li>
+</ul>
+<p>Then it installs:</p>
+<ul>
+    <li>the background service, <code>/Library/PrivilegedHelperTools/vpnchecker</code></li>
+    <li>the <code>vpnchecker</code> command, <code>/usr/local/bin/vpnchecker</code></li>
+    <li>your settings, <code>~/.config/vpnchecker/config.yaml</code> (an existing file is kept)</li>
+</ul>
+<p>If vpnchecker is already installed, this updates it: the question starts from your current mode, and your
+other settings stay.</p>
+</body>
+</html>

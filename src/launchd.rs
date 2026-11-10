@@ -15,8 +15,13 @@ const PLIST: &str = "/Library/LaunchDaemons/com.vpnchecker.daemon.plist";
 // Root-owned location so a non-root user cannot swap the binary launchd runs as root.
 const BIN_DIR: &str = "/Library/PrivilegedHelperTools";
 pub const BIN: &str = "/Library/PrivilegedHelperTools/vpnchecker";
-// CLI symlink created by install.sh.
+// CLI symlink, so `vpnchecker` works in any shell however the daemon was installed (install.sh, cargo install).
 const LINK: &str = "/usr/local/bin/vpnchecker";
+
+/// Whether the daemon is set up on this Mac (running or not).
+pub fn installed() -> bool {
+    Path::new(PLIST).exists()
+}
 
 pub fn install(config_path: &Path, socket: &Path) -> Result<()> {
     sys::require_root()?;
@@ -40,8 +45,38 @@ pub fn install(config_path: &Path, socket: &Path) -> Result<()> {
     chown(Path::new(PLIST), Some(Uid::from_raw(0)), Some(Gid::from_raw(0))).context("chown plist")?;
     fs::set_permissions(PLIST, Permissions::from_mode(0o644))?;
     load()?;
-    println!("installed {LABEL}\n  binary: {BIN}\n  plist:  {PLIST}\n  config: {}\n  log:    {LOG}", config_path.display());
+    let cli = match ensure_cli_link() {
+        Ok(true) => LINK.to_string(),
+        Ok(false) => format!("{BIN} ({LINK} is not a symlink, left alone)"),
+        Err(e) => format!("{BIN} (could not link {LINK}: {e:#})"),
+    };
+    println!(
+        "installed {LABEL}\n  binary: {BIN}\n  cli:    {cli}\n  plist:  {PLIST}\n  config: {}\n  log:    {LOG}",
+        config_path.display()
+    );
     Ok(())
+}
+
+/// `/usr/local/bin/vpnchecker` -> the installed binary. Also run after an update: a daemon installed with
+/// `sudo vpnchecker install` before 0.1.7 has no link yet, and the installer is never run again.
+pub fn ensure_cli_link() -> Result<bool> {
+    link_cli(Path::new(BIN), Path::new(LINK))
+}
+
+/// Points `link` at `bin`, replacing a symlink that is already there. A regular file at `link` belongs to someone
+/// else and is left alone (returns false). The daemon is installed either way: the CLI is then `bin` itself.
+fn link_cli(bin: &Path, link: &Path) -> Result<bool> {
+    match fs::symlink_metadata(link) {
+        Ok(meta) if !meta.file_type().is_symlink() => return Ok(false),
+        Ok(_) => fs::remove_file(link).with_context(|| format!("replacing {}", link.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("reading {}", link.display())),
+    }
+    if let Some(dir) = link.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    std::os::unix::fs::symlink(bin, link).with_context(|| format!("linking {}", link.display()))?;
+    Ok(true)
 }
 
 /// Unfreezes Claude / Cursor / Rider and removes the dns shield: nothing may stay blocked once the daemon is gone.
@@ -216,5 +251,31 @@ mod tests {
         let p = plist(Path::new("/Users/a&b/.config/vpnchecker/config.yaml"), Path::new("/var/run/x.sock"));
         assert!(p.contains("/Users/a&amp;b/.config"));
         assert!(p.contains("<string>run</string>"));
+    }
+
+    #[test]
+    fn cli_link_is_created_replaced_and_never_overwrites_a_file() {
+        let dir = std::env::temp_dir().join(format!("vpnchecker-link-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let bin = dir.join("bin");
+        let link = dir.join("missing-dir").join("vpnchecker");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&bin, b"x").unwrap();
+
+        // Fresh install: parent directory and link are created.
+        assert!(link_cli(&bin, &link).unwrap());
+        assert_eq!(fs::read_link(&link).unwrap(), bin);
+        // A stale link (older install location) is repointed.
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(dir.join("old"), &link).unwrap();
+        assert!(link_cli(&bin, &link).unwrap());
+        assert_eq!(fs::read_link(&link).unwrap(), bin);
+        // A regular file is someone else's and stays untouched.
+        fs::remove_file(&link).unwrap();
+        fs::write(&link, b"theirs").unwrap();
+        assert!(!link_cli(&bin, &link).unwrap());
+        assert_eq!(fs::read(&link).unwrap(), b"theirs");
+
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

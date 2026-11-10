@@ -12,6 +12,9 @@ const BUTTON_LATER: &str = "Later";
 const BUTTON_SKIP: &str = "Skip This Version";
 /// An unanswered dialog closes by itself after this long and counts as "later".
 const ASK_SECS: u64 = 300;
+/// A setup dialog waits longer: connecting the VPN can take a browser login. The installer package gives the whole
+/// setup an hour (pkg/build.sh).
+const SETUP_SECS: u64 = 900;
 
 /// What the user chose when asked about a new version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +98,77 @@ async fn ask(uid: Option<u32>, message: &str, secs: u64) -> Option<Answer> {
     Some(parse_answer(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// A question for the user during `vpnchecker setup`.
+#[derive(Debug, Clone, Default)]
+pub struct Dialog<'a> {
+    pub message: &'a str,
+    /// One to three buttons (a macOS limit), left to right; the last one is the default.
+    pub buttons: &'a [&'a str],
+    /// The button, one of `buttons`, that Esc presses. Clicking it counts as [`Reply::Cancelled`].
+    pub cancel: Option<&'a str>,
+    /// A warning icon instead of the plain one.
+    pub caution: bool,
+}
+
+/// How a [`Dialog`] ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reply {
+    /// The clicked button.
+    Button(String),
+    /// The cancel button, Esc, or nobody answered in time.
+    Cancelled,
+}
+
+/// Shows `dialog` in the GUI session of `uid` and waits for the answer. `None`: it could not be shown (nobody is
+/// logged in), which must never be read as an answer.
+pub async fn dialog(uid: Option<u32>, dialog: &Dialog<'_>) -> Option<Reply> {
+    show(uid, dialog, SETUP_SECS).await
+}
+
+async fn show(uid: Option<u32>, dialog: &Dialog<'_>, secs: u64) -> Option<Reply> {
+    // Every text travels as an argument, never inside the script: argv is message, cancel, buttons...
+    let mut display = String::from(
+        "set answer to display dialog (item 1 of argv) with title \"vpnchecker setup\" \
+         buttons (items 3 thru -1 of argv) default button (item -1 of argv)",
+    );
+    if dialog.cancel.is_some() {
+        display.push_str(" cancel button (item 2 of argv)");
+    }
+    display.push_str(&format!(" with icon {} giving up after {secs}", if dialog.caution { "caution" } else { "note" }));
+    let result = "return button returned of answer";
+    let mut cmd = osascript(uid)?;
+    for line in ["on run argv", &display, "if gave up of answer then return \"\"", result, "end run"] {
+        cmd.args(["-e", line]);
+    }
+    cmd.args([dialog.message, dialog.cancel.unwrap_or_default()])
+        .args(dialog.buttons)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    let out = match timeout(Duration::from_secs(secs + 30), cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            debug!(error = %e, "dialog failed");
+            return None;
+        }
+        Err(_) => return None,
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let reply = parse_reply(out.status.success(), &String::from_utf8_lossy(&out.stdout), &stderr);
+    if reply.is_none() {
+        debug!(stderr = %stderr.trim(), "dialog could not be shown");
+    }
+    reply
+}
+
+/// osascript prints the clicked button; the cancel button makes it fail with error -128.
+fn parse_reply(success: bool, stdout: &str, stderr: &str) -> Option<Reply> {
+    if !success {
+        return stderr.contains("(-128)").then_some(Reply::Cancelled);
+    }
+    let name = stdout.trim_end_matches('\n');
+    Some(if name.is_empty() { Reply::Cancelled } else { Reply::Button(name.to_string()) })
+}
+
 /// Only the exact "Update" button is consent; a timeout or anything unexpected means "later".
 fn parse_answer(stdout: &str) -> Answer {
     match stdout.trim() {
@@ -115,6 +189,37 @@ mod tests {
         for other in ["Later\n", "", "\n", "update", "Update now", "button returned:Update", "OK"] {
             assert_eq!(parse_answer(other), Answer::Later, "{other:?}");
         }
+    }
+
+    #[test]
+    fn dialog_replies() {
+        assert_eq!(parse_reply(true, "Whole Mac\n", ""), Some(Reply::Button("Whole Mac".into())));
+        // Nobody answered in time.
+        assert_eq!(parse_reply(true, "\n", ""), Some(Reply::Cancelled));
+        assert_eq!(parse_reply(false, "", "42:99: execution error: User canceled. (-128)\n"), Some(Reply::Cancelled));
+        // Not shown at all: never an answer.
+        assert_eq!(parse_reply(false, "", "execution error: No user interaction allowed. (-1713)\n"), None);
+    }
+
+    /// Run with `cargo test -- --ignored`: shows both kinds of setup dialog for two seconds and lets them time out.
+    #[tokio::test]
+    #[ignore = "shows dialogs on screen"]
+    async fn unanswered_setup_dialogs_mean_cancelled() {
+        let message = "vpnchecker test dialog with \"quotes\" and a\nsecond line.\n\nIt closes by itself, do not click.";
+        let choice = Dialog {
+            message,
+            buttons: &["Cancel", "Apps Only", "Whole Mac"],
+            cancel: Some("Cancel"),
+            ..Dialog::default()
+        };
+        assert_eq!(show(None, &choice, 2).await, Some(Reply::Cancelled));
+        let plain = Dialog {
+            message,
+            buttons: &["OK"],
+            caution: true,
+            ..Dialog::default()
+        };
+        assert_eq!(show(None, &plain, 2).await, Some(Reply::Cancelled));
     }
 
     /// Run with `cargo test -- --ignored`: shows the real dialog for two seconds and lets it time out.

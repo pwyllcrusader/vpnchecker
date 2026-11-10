@@ -105,7 +105,7 @@ pub fn find_interface(vpn: &VpnConfig) -> Result<Option<(String, IpAddr)>> {
     Ok(None)
 }
 
-async fn default_route_interface(limit: Duration) -> Option<String> {
+pub async fn default_route_interface(limit: Duration) -> Option<String> {
     let out = timeout(limit, Command::new("/sbin/route").args(["-n", "get", "default"]).output())
         .await
         .ok()?

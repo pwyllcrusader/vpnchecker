@@ -9,7 +9,7 @@ repository = "https://github.com/pwyllcrusader/vpnchecker"
 readme = "README.md"
 keywords = ["vpn", "killswitch", "macos", "pf", "firewall"]
 categories = ["command-line-utilities", "network-programming"]
-exclude = [".vscode/", ".github/", "install.sh"]
+exclude = [".vscode/", ".github/", "install.sh", "pkg/"]
 
 [dependencies]
 anyhow = "1.0.104"

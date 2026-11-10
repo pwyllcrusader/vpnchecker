@@ -12,6 +12,7 @@ mod pf;
 mod procs;
 mod resolver;
 mod routewatch;
+mod setup;
 mod sys;
 mod update;
 
@@ -74,6 +75,13 @@ enum Command {
     Procs,
     /// Install and start the launchd daemon (root)
     Install,
+    /// Guided setup with a dialog: choose the mode (full or scoped), make sure the VPN is detected, then install or
+    /// update (root; this is what the installer package runs)
+    Setup {
+        /// Whose config is set up and who is asked [default: the user behind sudo, else the user at the screen]
+        #[arg(long)]
+        user: Option<String>,
+    },
     /// Stop and remove the launchd daemon and pf rules (root)
     Uninstall,
     /// Start the installed daemon (root)
@@ -143,6 +151,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<ExitCode> {
+    // Before the default config path: under the installer there is no sudo user to derive it from.
+    if let Command::Setup { user } = &cli.command {
+        return setup::run(cli.config, &cli.socket, user.as_deref()).await;
+    }
     let config_path = match cli.config {
         Some(path) => path,
         None => sys::default_config_path()?,
@@ -160,6 +172,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Command::Diagnose => diagnose(&config_path).await?,
         Command::Procs => procs_command(&config_path).await?,
         Command::Install => launchd::install(&config_path, socket)?,
+        Command::Setup { .. } => unreachable!("handled above"),
         Command::Uninstall => launchd::uninstall(&config_path, socket).await?,
         Command::Start => launchd::start()?,
         Command::Stop { keep_block } => launchd::stop(&config_path, keep_block).await?,
@@ -198,6 +211,9 @@ async fn update_command(config_path: &Path, check: bool) -> Result<()> {
         update::Outcome::UpToDate { current, latest } => println!("up to date: {current} (latest release {latest})"),
         update::Outcome::Updated { from, to } => {
             println!("updated {from} -> {to}");
+            if let Err(e) = launchd::ensure_cli_link() {
+                eprintln!("could not link the vpnchecker command: {e:#}");
+            }
             launchd::restart()?;
             println!("daemon restarted");
         }
