@@ -1,5 +1,5 @@
-//! `vpnchecker setup`: the guided first-time setup the installer package runs. It asks one question (what to
-//! protect), makes sure the VPN is detected, and only then installs the daemon.
+//! `vpnchecker setup`: the guided setup the installer package runs. It asks one question (the mode: full or
+//! scoped), makes sure the VPN is detected, and only then installs the daemon.
 
 use std::fs;
 use std::io::Write;
@@ -18,13 +18,13 @@ use crate::detect::{self, CheckResult, VpnState};
 use crate::notify::{self, Dialog, Reply};
 use crate::{launchd, sys};
 
-const WHOLE_MAC: &str = "Whole Mac";
-const APPS_ONLY: &str = "Apps Only";
+const FULL: &str = "Full";
+const SCOPED: &str = "Scoped";
 const CANCEL: &str = "Cancel";
 const CHECK_AGAIN: &str = "Check Again";
 const OK: &str = "OK";
 
-/// Exit code 0: installed; 1: the user cancelled, the daemon was not installed.
+/// Exit code 0: installed; 1: the user cancelled, no daemon was installed or replaced.
 pub async fn run(config: Option<PathBuf>, socket: &Path, user: Option<&str>) -> Result<ExitCode> {
     sys::require_root()?;
     let user = target_user(user)?;
@@ -36,7 +36,7 @@ pub async fn run(config: Option<PathBuf>, socket: &Path, user: Option<&str>) -> 
             Ok(ExitCode::SUCCESS)
         }
         Ok(false) => {
-            println!("setup cancelled, the daemon was not installed");
+            println!("setup cancelled: no daemon was installed or replaced");
             Ok(ExitCode::from(1))
         }
         Err(e) => {
@@ -70,7 +70,6 @@ fn target_user(name: Option<&str>) -> Result<User> {
 async fn guided(user: &User, config_path: &Path, socket: &Path) -> Result<bool> {
     let uid = Some(user.uid.as_raw());
     let shown = config_path.display();
-    // An installed daemon already has a config its user is happy with: this is an upgrade, nothing to ask.
     let first_install = !launchd::installed();
     let new_config = !config_path.exists();
     if new_config {
@@ -80,25 +79,27 @@ async fn guided(user: &User, config_path: &Path, socket: &Path) -> Result<bool> 
     let mut text = fs::read_to_string(config_path).with_context(|| format!("reading {shown}"))?;
     let mut cfg = config::parse(&text).with_context(|| format!("invalid config {shown}"))?;
 
-    if first_install {
-        // The one question of the setup.
-        match notify::dialog(uid, &mode_dialog(cfg.mode, &mode_question(config_path))).await {
-            None => println!("no dialog could be shown, keeping mode {}", cfg.mode.as_str()),
-            Some(Reply::Cancelled) => return Ok(false),
-            Some(Reply::Button(name)) => {
-                let mode = if name == WHOLE_MAC { Mode::Full } else { Mode::Scoped };
-                if mode != cfg.mode {
-                    text = config::set_mode(&text, mode);
-                    cfg = save(user, config_path, &text)?;
-                    if cfg.mode != mode {
-                        bail!("could not set mode in {shown}, edit it manually");
-                    }
+    // The one question of the setup, asked on every run: on an upgrade the current mode is the default answer.
+    let before = cfg.mode;
+    match notify::dialog(uid, &mode_dialog(before, &mode_question(config_path, (!new_config).then_some(before)))).await {
+        None => println!("no dialog could be shown, keeping mode {}", before.as_str()),
+        Some(Reply::Cancelled) => return Ok(false),
+        Some(Reply::Button(name)) => {
+            let mode = if name == FULL { Mode::Full } else { Mode::Scoped };
+            if mode != before {
+                text = config::set_mode(&text, mode);
+                cfg = save(user, config_path, &text)?;
+                if cfg.mode != mode {
+                    bail!("could not set mode in {shown}, edit it manually");
                 }
-                println!("mode: {}", cfg.mode.as_str());
             }
+            println!("mode: {}", cfg.mode.as_str());
         }
+    }
 
-        // Started without a detected VPN, the daemon would cut the connection (or freeze the apps) at once.
+    // Started without a detected VPN, the daemon would cut the connection (or freeze the apps) at once. A daemon
+    // that already runs in this mode does that anyway, so an upgrade that keeps the mode does not wait for the VPN.
+    if first_install || cfg.mode != before {
         // The pool of a config created just now is only the template's guess, so it follows the tunnel that is
         // connected instead of being asked for; a pool somebody wrote is theirs and stays.
         let mut pool_is_a_guess = new_config;
@@ -140,20 +141,22 @@ async fn guided(user: &User, config_path: &Path, socket: &Path) -> Result<bool> 
                 Some(Reply::Button(_)) => {}
             }
         }
-    } else {
-        println!("the daemon is already installed: {shown} stays as it is");
     }
 
     launchd::install(config_path, socket)?;
     Ok(true)
 }
 
-fn mode_question(config_path: &Path) -> String {
+/// `current`: the mode of a config that existed before this setup.
+fn mode_question(config_path: &Path, current: Option<Mode>) -> String {
+    let current = current.map(|mode| format!("Now: {}. ", mode.as_str())).unwrap_or_default();
     format!(
-        "What should vpnchecker restrict while the VPN is down?\n\n\
-         {WHOLE_MAC}: nothing leaves this Mac except to hosts you allow, and Claude, Cursor and Rider are paused.\n\n\
-         {APPS_ONLY}: only Claude, Cursor and Rider are paused and blocked. Everything else keeps working.\n\n\
-         You can change this later: `mode` in {}.",
+        "Which mode should vpnchecker run in?\n\n\
+         {FULL}: while the VPN is down, nothing leaves this Mac except to hosts you allow. Claude, Cursor and Rider \
+         are paused.\n\n\
+         {SCOPED}: while the VPN is down, only Claude, Cursor and Rider are paused and blocked. Everything else \
+         keeps working.\n\n\
+         {current}You can change it later: `mode` in {}.",
         config_path.display()
     )
 }
@@ -163,8 +166,8 @@ fn mode_dialog(current: Mode, question: &str) -> Dialog<'_> {
     Dialog {
         message: question,
         buttons: match current {
-            Mode::Full => &[CANCEL, APPS_ONLY, WHOLE_MAC],
-            Mode::Scoped => &[CANCEL, WHOLE_MAC, APPS_ONLY],
+            Mode::Full => &[CANCEL, SCOPED, FULL],
+            Mode::Scoped => &[CANCEL, FULL, SCOPED],
         },
         cancel: Some(CANCEL),
         ..Dialog::default()
@@ -344,9 +347,14 @@ mod tests {
 
     #[test]
     fn the_current_mode_is_the_default_button() {
-        assert_eq!(mode_dialog(Mode::Full, "?").buttons.last(), Some(&WHOLE_MAC));
-        assert_eq!(mode_dialog(Mode::Scoped, "?").buttons.last(), Some(&APPS_ONLY));
+        assert_eq!(mode_dialog(Mode::Full, "?").buttons, [CANCEL, SCOPED, FULL]);
+        assert_eq!(mode_dialog(Mode::Scoped, "?").buttons, [CANCEL, FULL, SCOPED]);
         assert_eq!(mode_dialog(Mode::Scoped, "?").cancel, Some(CANCEL));
+
+        // An upgrade says which mode is in effect; a first install has none to report.
+        let path = Path::new("/Users/a/.config/vpnchecker/config.yaml");
+        assert!(mode_question(path, Some(Mode::Scoped)).contains("Now: scoped. You can change it later"));
+        assert!(!mode_question(path, None).contains("Now:"));
     }
 
     #[test]

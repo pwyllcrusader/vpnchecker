@@ -75,8 +75,8 @@ enum Command {
     Procs,
     /// Install and start the launchd daemon (root)
     Install,
-    /// Guided setup with dialogs: choose what to protect, make sure the VPN is detected, then install (root; this is
-    /// what the installer package runs)
+    /// Guided setup with a dialog: choose the mode (full or scoped), make sure the VPN is detected, then install or
+    /// update (root; this is what the installer package runs)
     Setup {
         /// Whose config is set up and who is asked [default: the user behind sudo, else the user at the screen]
         #[arg(long)]

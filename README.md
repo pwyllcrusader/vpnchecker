@@ -84,11 +84,11 @@ The script downloads the prebuilt universal binary from the latest GitHub releas
 
 ### Installer package
 
-No terminal needed: download [`vpnchecker.pkg`](https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/vpnchecker.pkg), connect the VPN and open the file. Installer asks for your Mac password, then setup asks one question, what to restrict while the VPN is down: the whole Mac (`full`) or only Claude, Cursor and Rider (`scoped`). After that it installs the daemon exactly like `sudo vpnchecker install` does.
+No terminal needed: download [`vpnchecker.pkg`](https://github.com/pwyllcrusader/vpnchecker/releases/latest/download/vpnchecker.pkg), connect the VPN and open the file. Installer asks for your Mac password, then setup asks one question, the mode: *Full* (the whole Mac is restricted while the VPN is down) or *Scoped* (only Claude, Cursor and Rider). After that it installs the daemon exactly like `sudo vpnchecker install` does.
 
-- If the VPN is not connected, setup waits with a *Check Again* button instead of installing, because a daemon started without the VPN would cut the connection at once. *Cancel* leaves nothing installed.
-- A new config takes the VPN address pool from the connected tunnel when that is outside the default `10.0.0.0/8`; an existing config is never changed.
-- On a Mac that already runs vpnchecker the package updates it and asks nothing.
+- If the VPN is not connected, setup waits with a *Check Again* button instead of installing, because a daemon started without the VPN would cut the connection at once. *Cancel* leaves nothing installed. An update that keeps the mode does not wait: the running daemon enforces it already.
+- A new config takes the VPN address pool from the connected tunnel when that is outside the default `10.0.0.0/8`; in an existing config the pool is never changed.
+- On a Mac that already runs vpnchecker the package updates it. The question is asked again with the current mode as the default; everything else in the config stays.
 
 The package is not signed with an Apple Developer ID, so macOS does not open it on a plain double click. Try to open it once, then allow it under *System Settings → Privacy & Security → Open Anyway* (macOS 14 and earlier: Control-click the file → *Open*). `vpnchecker.pkg.sha256` next to it in the release holds its checksum.
 
@@ -119,7 +119,7 @@ vpnchecker status
 
 | Command | Root | Description |
 |---|---|---|
-| `setup [--user NAME]` | yes | Guided setup with dialogs, as run by the installer package: asks for the mode, waits until the VPN is detected, then installs |
+| `setup [--user NAME]` | yes | Guided setup with dialogs, as run by the installer package: asks for the mode (full or scoped), waits until the VPN is detected, then installs or updates |
 | `install` / `uninstall` | yes | Install / remove the launchd daemon (`uninstall` also removes pf rules, resumes frozen apps and removes the DNS shield) |
 | `start` / `restart` | yes | Start / restart the installed daemon |
 | `stop [--keep-block]` | yes | Stop the daemon, remove its pf rules (`--keep-block` keeps the exit rules), resume frozen apps, remove the DNS shield |

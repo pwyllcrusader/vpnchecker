@@ -19,14 +19,18 @@
 Mac is restricted the same way.</p>
 <p class="note"><b>Connect your VPN before you continue.</b> vpnchecker starts only once it sees the VPN.
 Otherwise it would cut the connection right away.</p>
-<p>After you enter your Mac password, setup asks one question: what to restrict while the VPN is down, the
-whole Mac or only Claude, Cursor and Rider.</p>
+<p>After you enter your Mac password, setup asks one question: which mode to run in.</p>
+<ul>
+    <li><b>Full:</b> while the VPN is down, nothing leaves this Mac except to hosts you allow.</li>
+    <li><b>Scoped:</b> while the VPN is down, only Claude, Cursor and Rider are held back.</li>
+</ul>
 <p>Then it installs:</p>
 <ul>
     <li>the background service, <code>/Library/PrivilegedHelperTools/vpnchecker</code></li>
     <li>the <code>vpnchecker</code> command, <code>/usr/local/bin/vpnchecker</code></li>
     <li>your settings, <code>~/.config/vpnchecker/config.yaml</code> (an existing file is kept)</li>
 </ul>
-<p>If vpnchecker is already installed, this updates it and asks nothing.</p>
+<p>If vpnchecker is already installed, this updates it: the question starts from your current mode, and your
+other settings stay.</p>
 </body>
 </html>
