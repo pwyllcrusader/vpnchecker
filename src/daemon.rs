@@ -153,7 +153,13 @@ pub async fn run(config_path: PathBuf, socket: &Path, dry_run: bool) -> Result<(
         updating: Arc::new(AtomicBool::new(false)),
         control: tx,
     };
-    info!(version = update::CURRENT, mode = ?d.cfg.mode, action = ?d.cfg.protect.action, "vpnchecker started");
+    info!(
+        version = update::CURRENT,
+        mode = ?d.cfg.mode,
+        freeze = d.cfg.freezes(),
+        action = ?d.cfg.protect.action,
+        "vpnchecker started"
+    );
     if d.cfg.update.auto && !self_update && !dry_run {
         info!("auto-update is inactive: this process does not run from {}", launchd::BIN);
     }
@@ -557,9 +563,10 @@ impl Daemon {
                 if self.shield_ready && self.cfg.protect.dns_shield {
                     self.shield.enable();
                 }
-                self.notify(match self.cfg.mode {
-                    Mode::Scoped => "VPN is down: Claude, Cursor and Rider are frozen",
-                    Mode::Full => "VPN is down: internet traffic is blocked, Claude, Cursor and Rider are frozen",
+                self.notify(match (self.cfg.mode, self.cfg.freezes()) {
+                    (Mode::Scoped, _) => "VPN is down: Claude, Cursor and Rider are frozen",
+                    (Mode::Full, true) => "VPN is down: internet traffic is blocked, Claude, Cursor and Rider are frozen",
+                    (Mode::Full, false) => "VPN is down: internet traffic is blocked",
                 });
             }
             Change::Opened => {
@@ -567,7 +574,11 @@ impl Daemon {
                 self.shield.disable();
                 self.resume().await;
                 if std::mem::take(&mut self.announce_resume) {
-                    self.notify("VPN is up: Claude, Cursor and Rider resumed");
+                    self.notify(if self.cfg.freezes() {
+                        "VPN is up: Claude, Cursor and Rider resumed"
+                    } else {
+                        "VPN is up: internet traffic unblocked"
+                    });
                 }
                 // The protected server addresses are refreshed through the tunnel as soon as it is back.
                 self.resolve().await;
@@ -583,6 +594,10 @@ impl Daemon {
     }
 
     async fn freeze(&mut self) {
+        if !self.cfg.freezes() {
+            self.frozen = 0;
+            return;
+        }
         let pids = procs::protected_pids(&self.matcher).await;
         let previous = std::mem::replace(&mut self.frozen, pids.len());
         if pids.is_empty() {
@@ -644,6 +659,10 @@ impl Daemon {
                 self.shield.configure(cfg.protect.domains.clone(), cfg.protect.dns_port);
                 self.cfg = cfg;
                 info!("config reloaded");
+                if !self.cfg.freezes() && self.frozen > 0 {
+                    // The freeze was switched off while the apps are frozen: don't wait for the VPN to come back.
+                    self.resume().await;
+                }
                 self.sync_zones();
                 self.resolve().await;
                 self.check().await;

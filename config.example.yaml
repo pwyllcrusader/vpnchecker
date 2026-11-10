@@ -1,9 +1,10 @@
 # vpnchecker configuration (~/.config/vpnchecker/config.yaml)
 #
-# Claude, Cursor and Rider are ALWAYS protected: while the VPN is down their processes are frozen. For Claude and
-# Cursor, lookups for their domains also stay on this Mac (dns shield) and their server addresses are refused by the
-# kernel outside the tunnel. Rider is covered by the freeze only.
-# `mode` only decides whether the rest of the machine is restricted as well.
+# Claude, Cursor and Rider are ALWAYS protected. For Claude and Cursor, lookups for their domains stay on this Mac
+# while the VPN is down (dns shield) and their server addresses are refused by the kernel outside the tunnel. In
+# `scoped` mode their processes are also frozen while the VPN is down (Rider is covered by the freeze only); in `full`
+# mode only with protect.freeze, since everything is blocked there anyway.
+# `mode` decides whether the rest of the machine is restricted as well.
 
 # full (default): in addition, ALL outbound traffic is blocked unless it leaves through the VPN interface, goes to
 #         the allowlist below, or is loopback / DNS / DHCP / NTP / ICMPv6.
@@ -24,6 +25,8 @@ vpn:
   check_globalprotect: true
 
 protect:
+  # full mode only: also freeze / kill the apps while the VPN is down. Always on in scoped mode.
+  freeze: false
   # stop: freeze (SIGSTOP) while the VPN is down, resume (SIGCONT) afterwards: nothing is lost.
   # kill: SIGTERM, then SIGKILL.
   action: stop

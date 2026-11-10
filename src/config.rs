@@ -41,7 +41,7 @@ pub struct Config {
     /// `scoped`: only the protected apps (Claude / Cursor / Rider) are affected.
     #[serde(default)]
     pub mode: Mode,
-    /// Claude / Cursor / Rider protection. Always active, in both modes.
+    /// Claude / Cursor / Rider protection. Always active, in both modes; the freeze only in `scoped` or with `protect.freeze`.
     #[serde(default)]
     pub protect: ProtectConfig,
     #[serde(default)]
@@ -97,6 +97,9 @@ pub struct VpnConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProtectConfig {
+    /// In `full` mode also freeze (or kill, see `action`) the protected processes while the VPN is down. pf already
+    /// blocks them there, so off by default. Always on in `scoped` mode.
+    pub freeze: bool,
     pub action: Action,
     /// Domain suffixes whose DNS lookups are blocked locally while the VPN is down (no query leaves the Mac).
     pub domains: Vec<String>,
@@ -130,6 +133,7 @@ impl Default for ProtectConfig {
     fn default() -> Self {
         let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
         Self {
+            freeze: false,
             action: Action::Stop,
             domains: owned(&["anthropic.com", "claude.ai", "claude.com", "cursor.sh", "cursor.com"]),
             hosts: owned(&[
@@ -562,6 +566,11 @@ impl Config {
         out
     }
 
+    /// Whether the protected processes are frozen / killed while the VPN is down.
+    pub fn freezes(&self) -> bool {
+        self.mode == Mode::Scoped || self.protect.freeze
+    }
+
     pub fn vpn_subnets(&self) -> BTreeSet<IpNet> {
         self.vpn.subnets.iter().map(IpNet::trunc).collect()
     }
@@ -662,7 +671,10 @@ mod tests {
     fn full_is_the_default_and_protection_has_defaults() {
         let cfg = parse("vpn:\n  subnets: [10.4.0.0/16]\n").unwrap();
         assert_eq!(cfg.mode, Mode::Full);
-        assert_eq!(parse("vpn:\n  subnets: [10.4.0.0/16]\nmode: scoped\n").unwrap().mode, Mode::Scoped);
+        let scoped = parse("vpn:\n  subnets: [10.4.0.0/16]\nmode: scoped\n").unwrap();
+        assert_eq!(scoped.mode, Mode::Scoped);
+        assert!(!cfg.protect.freeze && !cfg.freezes(), "pf already blocks everything in full mode");
+        assert!(scoped.freezes(), "scoped mode always freezes");
         assert_eq!(cfg.protect.action, Action::Stop);
         assert!(cfg.protect.dns_shield && cfg.protect.pf_block);
         assert!(!cfg.protect.observe_connections, "observed addresses cause collateral blocking, opt-in only");
@@ -676,10 +688,11 @@ mod tests {
     #[test]
     fn full_mode_and_custom_protection() {
         let cfg = parse(
-            "vpn:\n  subnets: [10.4.0.0/16]\nmode: full\nprotect:\n  action: kill\n  extra_process_patterns: ['/Foo\\.app/']\n  resume_checks: 2\n",
+            "vpn:\n  subnets: [10.4.0.0/16]\nmode: full\nprotect:\n  freeze: true\n  action: kill\n  extra_process_patterns: ['/Foo\\.app/']\n  resume_checks: 2\n",
         )
         .unwrap();
         assert_eq!(cfg.mode, Mode::Full);
+        assert!(cfg.freezes());
         assert_eq!(cfg.protect.action, Action::Kill);
         assert_eq!(cfg.protect.patterns().last().unwrap(), "/Foo\\.app/");
     }
