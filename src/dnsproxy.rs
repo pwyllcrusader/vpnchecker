@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -19,6 +19,9 @@ pub const PORT: u16 = 10053;
 const LISTEN: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), PORT);
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 const TCP_IDLE: Duration = Duration::from_secs(10);
+// `scutil` is a process spawn: without a network every query fails, so re-read at most this often.
+const REFRESH_GAP: Duration = Duration::from_secs(1);
+const FAILURE_WARN_GAP: Duration = Duration::from_secs(10);
 pub const RESOLVER_DIR: &str = "/etc/resolver";
 const MARKER: &str = "# managed by vpnchecker";
 
@@ -35,6 +38,8 @@ pub struct Proxy {
     upstreams: RwLock<Vec<Upstream>>,
     resolver: Arc<Mutex<Resolver>>,
     dry_run: bool,
+    last_refresh: Mutex<Option<Instant>>,
+    last_failure_warn: Mutex<Option<Instant>>,
 }
 
 impl Proxy {
@@ -46,6 +51,8 @@ impl Proxy {
             upstreams: RwLock::new(Vec::new()),
             resolver,
             dry_run,
+            last_refresh: Mutex::new(None),
+            last_failure_warn: Mutex::new(None),
         });
         proxy.refresh_upstreams();
         tokio::spawn(serve_udp(proxy.clone(), Arc::new(udp)));
@@ -89,12 +96,28 @@ impl Proxy {
         let Some(name) = question_name(query) else {
             return servfail(query);
         };
-        let mut servers = self.upstream_for(&name);
-        if servers.is_empty() {
-            self.refresh_upstreams();
-            servers = self.upstream_for(&name);
+        let servers = self.upstream_for(&name);
+        if let Some(response) = self.forward(&name, &servers, query, tcp).await {
+            return response;
         }
-        for server in servers {
+        // The list can predate a network change, e.g. still the VPN's DNS after the tunnel dropped.
+        if take_slot(&self.last_refresh, REFRESH_GAP) {
+            self.refresh_upstreams();
+        }
+        let fresh = self.upstream_for(&name);
+        if fresh != servers
+            && let Some(response) = self.forward(&name, &fresh, query, tcp).await
+        {
+            return response;
+        }
+        if take_slot(&self.last_failure_warn, FAILURE_WARN_GAP) {
+            warn!(%name, servers = ?fresh, "no dns upstream answered");
+        }
+        servfail(query)
+    }
+
+    async fn forward(&self, name: &str, servers: &[SocketAddr], query: &[u8], tcp: bool) -> Option<Vec<u8>> {
+        for &server in servers {
             // UDP first even for TCP clients: some VPN DNS servers do not answer over TCP.
             let mut result = forward_udp(server, query).await;
             if tcp
@@ -106,13 +129,13 @@ impl Proxy {
             }
             match result {
                 Ok(response) => {
-                    self.learn(&name, &response).await;
-                    return response;
+                    self.learn(name, &response).await;
+                    return Some(response);
                 }
                 Err(e) => debug!(%name, %server, error = %e, "upstream failed"),
             }
         }
-        servfail(query)
+        None
     }
 
     async fn learn(&self, name: &str, response: &[u8]) {
@@ -223,6 +246,17 @@ async fn forward_tcp(server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
     })
     .await
     .context("timeout")?
+}
+
+/// True at most once per `gap`; claims the slot when it returns true.
+fn take_slot(slot: &Mutex<Option<Instant>>, gap: Duration) -> bool {
+    let mut last = slot.lock().unwrap();
+    let now = Instant::now();
+    if last.is_some_and(|t| now.duration_since(t) < gap) {
+        return false;
+    }
+    *last = Some(now);
+    true
 }
 
 fn in_zone(name: &str, zone: &str) -> bool {
@@ -434,6 +468,14 @@ mod tests {
     }
 
     #[test]
+    fn take_slot_rate_limits() {
+        let slot = Mutex::new(None);
+        assert!(take_slot(&slot, Duration::from_secs(60)));
+        assert!(!take_slot(&slot, Duration::from_secs(60)));
+        assert!(take_slot(&slot, Duration::ZERO));
+    }
+
+    #[test]
     fn parses_answers_with_compression_and_cname() {
         let mut msg = query("www.Example.com");
         msg[2] = 0x81;
@@ -478,6 +520,8 @@ mod tests {
             upstreams: RwLock::new(ups),
             resolver: Arc::new(Mutex::new(Resolver::new(Duration::from_secs(60)))),
             dry_run: true,
+            last_refresh: Mutex::new(None),
+            last_failure_warn: Mutex::new(None),
         };
         assert_eq!(proxy.upstream_for("a.corp.example")[0], "10.0.0.53:53".parse().unwrap());
         assert_eq!(proxy.upstream_for("www.example.com")[0], "192.168.1.1:53".parse().unwrap());
